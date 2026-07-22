@@ -116,6 +116,22 @@ final class AppDatabase {
                 """)
         }
 
+        // Broker-truth columns: the TradingView account-history import fills
+        // these; manual trades leave them nil. usd_result stays the single
+        // P&L column everything sums — net of commission on imported rows.
+        migrator.registerMigration("v3") { db in
+            try db.execute(sql: """
+                ALTER TABLE trades ADD COLUMN entry_time TEXT;
+                ALTER TABLE trades ADD COLUMN exit_time TEXT;
+                ALTER TABLE trades ADD COLUMN side TEXT;
+                ALTER TABLE trades ADD COLUMN commission REAL;
+                ALTER TABLE trades ADD COLUMN gross_usd REAL;
+                ALTER TABLE trades ADD COLUMN source TEXT;
+                ALTER TABLE trades ADD COLUMN mae_ticks REAL;
+                ALTER TABLE trades ADD COLUMN mfe_ticks REAL;
+                """)
+        }
+
         return migrator
     }
 
@@ -223,6 +239,43 @@ final class AppDatabase {
 
     func save(_ trade: TradeRecord) throws {
         try dbQueue.write { db in try trade.save(db) }
+    }
+
+    /// True when an imported round trip with this exact broker fingerprint is
+    /// already journaled — re-pasting the same day's history stays idempotent.
+    func importedTradeExists(instrument: String, exitTime: String, exitPrice: Double) throws -> Bool {
+        try dbQueue.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: """
+                    SELECT EXISTS(
+                      SELECT 1 FROM trades
+                      WHERE source = 'tv_import'
+                        AND instrument = ? AND exit_time = ? AND exit_price = ?
+                    )
+                    """,
+                arguments: [instrument, exitTime, exitPrice]) ?? false
+        }
+    }
+
+    /// Every trade in the journal joined to its post time and session date —
+    /// the analytics engine's raw feed (lifetime, all sessions).
+    func allTradesForAnalytics() throws -> [AnalyticsTradeRow] {
+        try dbQueue.read { db in
+            try AnalyticsTradeRow.fetchAll(
+                db,
+                sql: """
+                    SELECT
+                      trades.*,
+                      entries.ts   AS post_ts,
+                      sessions.date AS session_date,
+                      sessions.instrument AS session_instrument
+                    FROM trades
+                    JOIN entries  ON entries.id = trades.entry_id
+                    JOIN sessions ON sessions.id = entries.session_id
+                    ORDER BY COALESCE(trades.entry_time, entries.ts) ASC
+                    """)
+        }
     }
 
     // MARK: - Comments

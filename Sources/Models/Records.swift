@@ -89,6 +89,79 @@ struct TradeRecord: Codable, Identifiable, Equatable, FetchableRecord, Persistab
     /// Instrument this trade was priced in — tick math uses THIS, never the
     /// session default (day-1 lesson: MNQ session, NQ fills, 10x under-report).
     var instrument: String?
+    // Broker-truth fields (schema v3) — filled by the TradingView account
+    // history import; nil on manual rows. usdResult is NET of commission on
+    // imported rows; grossUsd keeps the pre-commission number.
+    var entryTime: String?           // ISO8601
+    var exitTime: String?            // ISO8601
+    var side: String?                // "long" / "short"
+    var commission: Double?
+    var grossUsd: Double?
+    var source: String?              // nil = manual, "tv_import" = broker paste
+    var maeTicks: Double?
+    var mfeTicks: Double?
+
+    init(id: String, entryId: String, playType: String, levelId: String?,
+         contracts: Int, entryPrice: Double?, stopPrice: Double?,
+         targetPrice: Double?, exitPrice: Double?, ticksResult: Double?,
+         usdResult: Double?, result: String?, instrument: String?,
+         entryTime: String? = nil, exitTime: String? = nil, side: String? = nil,
+         commission: Double? = nil, grossUsd: Double? = nil, source: String? = nil,
+         maeTicks: Double? = nil, mfeTicks: Double? = nil) {
+        self.id = id
+        self.entryId = entryId
+        self.playType = playType
+        self.levelId = levelId
+        self.contracts = contracts
+        self.entryPrice = entryPrice
+        self.stopPrice = stopPrice
+        self.targetPrice = targetPrice
+        self.exitPrice = exitPrice
+        self.ticksResult = ticksResult
+        self.usdResult = usdResult
+        self.result = result
+        self.instrument = instrument
+        self.entryTime = entryTime
+        self.exitTime = exitTime
+        self.side = side
+        self.commission = commission
+        self.grossUsd = grossUsd
+        self.source = source
+        self.maeTicks = maeTicks
+        self.mfeTicks = mfeTicks
+    }
+}
+
+/// Trade row + its post timestamp and session date — the flat feed the
+/// analytics engine filters and aggregates. Mirrors allTradesForAnalytics().
+struct AnalyticsTradeRow: Codable, FetchableRecord {
+    static let databaseColumnDecodingStrategy = DatabaseColumnDecodingStrategy.convertFromSnakeCase
+
+    var id: String
+    var playType: String
+    var contracts: Int
+    var entryPrice: Double?
+    var exitPrice: Double?
+    var ticksResult: Double?
+    var usdResult: Double?
+    var result: String?
+    var instrument: String?
+    var entryTime: String?
+    var exitTime: String?
+    var side: String?
+    var commission: Double?
+    var grossUsd: Double?
+    var source: String?
+    var maeTicks: Double?
+    var mfeTicks: Double?
+    var postTs: String
+    var sessionDate: String
+    var sessionInstrument: String
+
+    var resolvedInstrument: String { instrument ?? sessionInstrument }
+    /// Best clock for time-of-day/weekday bucketing: broker entry time when
+    /// imported, else the post's timestamp.
+    var clockISO: String { entryTime ?? postTs }
 }
 
 /// One reply in a post's thread — user and mentor go back and forth like

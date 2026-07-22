@@ -1010,7 +1010,8 @@ struct TradeLogSheet: View {
             contracts: contracts,
             entryPrice: parseDouble(entryPriceText),
             stopPrice: parseDouble(stopPriceText),
-            targetPrice: parseDouble(targetPriceText))
+            targetPrice: parseDouble(targetPriceText),
+            side: isLong ? "long" : "short")
     }
 
     private func prefill() {

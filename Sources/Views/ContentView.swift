@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var showUpgradeLog = false
     @State private var confirmUpdate = false
     @State private var showSettings = false
+    @State private var showSettleDay = false
+    @State private var showAnalytics = false
 
     var body: some View {
         content
@@ -26,7 +28,36 @@ struct ContentView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsView()
             }
+            .sheet(isPresented: $showSettleDay) {
+                SettleDaySheet()
+            }
+            .sheet(isPresented: $showAnalytics) {
+                AnalyticsView()
+            }
             .toolbar {
+                // Always visible — pre-session setup included: edition badge
+                // and the TradingView tie live here.
+                ToolbarItem(placement: .navigation) {
+                    Text("LEDGER v\(AppVersion.string)")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Theme.purple)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Theme.purple.opacity(0.12)))
+                        .overlay(Capsule().stroke(Theme.purple.opacity(0.5), lineWidth: 1))
+                        .help("Skuld's Ledger v\(AppVersion.string)")
+                }
+                ToolbarItem(placement: .navigation) {
+                    TVStatusControl()
+                }
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        showAnalytics = true
+                    } label: {
+                        Label("Analytics", systemImage: "chart.bar.xaxis")
+                    }
+                    .help("Trader profile — lifetime KPIs, Sharpe, streaks, cross filters")
+                }
                 ToolbarItem(placement: .automatic) {
                     Button {
                         showSettings = true
@@ -140,17 +171,6 @@ struct ContentView: View {
                 Text("\(store.session?.instrument ?? "?")  \(store.session?.date ?? "")")
                     .font(Theme.mono)
                     .foregroundStyle(Theme.text)
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(store.tvConnected ? Theme.cyan : Theme.textDim.opacity(0.4))
-                        .frame(width: 6, height: 6)
-                    Text("TV")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(store.tvConnected ? Theme.cyan : Theme.textDim)
-                }
-                .help(store.tvConnected
-                    ? "TradingView bridge live — levels sync off the chart"
-                    : "TradingView bridge down — run `tv launch` in Terminal")
             }
         }
         ToolbarItemGroup(placement: .primaryAction) {
@@ -170,6 +190,8 @@ struct ContentView: View {
             .help(syncHelp)
             Button("Rescan Inbox") { store.rescanInbox() }
                 .help("Re-scan today's inbox for new screenshots (⇧⌘R)")
+            Button("Settle Day") { showSettleDay = true }
+                .help("Paste TradingView's account history — real fills become journal truth")
             Button("Generate Report") { store.generateReport() }
                 .help("Write today's session report to Reports/ (⇧⌘E)")
             Button("End Session") { confirmEndSession = true }
@@ -193,6 +215,75 @@ struct ContentView: View {
 
     private static func usd(_ value: Double) -> String {
         String(format: "$%.0f", max(0, value))
+    }
+}
+
+// MARK: - TradingView tie (status + safe open)
+
+/// Tri-state TV indicator + the one-click safe path to a bridged TradingView.
+///  cyan  = bridge live (level pull on)
+///  blue  = TV running without the bridge (screenshots fine; user restarts
+///          TV when convenient — Ledger NEVER touches a running chart)
+///  dim   = TV closed -> button opens it WITH the bridge flag
+private struct TVStatusControl: View {
+    @EnvironmentObject private var store: SessionStore
+
+    var body: some View {
+        Button {
+            store.openTradingView()
+        } label: {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 6, height: 6)
+                Text(label)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(textColor)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Theme.inset))
+            .overlay(Capsule().stroke(dotColor.opacity(0.4), lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(store.tvStatus == .bridge)
+        .help(helpText)
+    }
+
+    private var dotColor: Color {
+        switch store.tvStatus {
+        case .bridge: return Theme.cyan
+        case .filesOnly: return Theme.blue
+        case .closed: return Theme.textDim.opacity(0.5)
+        }
+    }
+
+    private var textColor: Color {
+        switch store.tvStatus {
+        case .bridge: return Theme.cyan
+        case .filesOnly: return Theme.blue
+        case .closed: return Theme.textDim
+        }
+    }
+
+    private var label: String {
+        switch store.tvStatus {
+        case .bridge: return "TV LIVE"
+        case .filesOnly: return "TV"
+        case .closed: return "OPEN TV"
+        }
+    }
+
+    private var helpText: String {
+        switch store.tvStatus {
+        case .bridge:
+            return "TradingView bridge live — levels sync straight off the chart"
+        case .filesOnly:
+            return "TradingView running without the bridge — screenshots work fine. Click for the safe way to enable level pull (never auto-restarts your chart)."
+        case .closed:
+            return "Open TradingView with the bridge on — one click, connected"
+        }
     }
 }
 

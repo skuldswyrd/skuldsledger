@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var targetText: String = ""
     @State private var maxLossText: String = ""
     @State private var defaultInstrument: Instrument?
+    @State private var launchTV = true
     /// Raw plan (no settings overlay) — shows the true plan defaults beside
     /// each knob. store.plan is already overlaid, so it can't serve here.
     @State private var basePlan = TradingPlan()
@@ -29,6 +30,7 @@ struct SettingsView: View {
                     maxLossRow
                     minRankRow
                     instrumentRow
+                    tvLaunchRow
                     environmentCard
                 }
                 .padding(16)
@@ -51,6 +53,7 @@ struct SettingsView: View {
         targetText = s.dailyTargetUsd.map(Self.plainMoney) ?? ""
         maxLossText = s.dailyMaxLossUsd.map(Self.plainMoney) ?? ""
         defaultInstrument = s.defaultInstrument.flatMap(Instrument.init(rawValue:))
+        launchTV = s.launchTVWithLedger ?? true
         basePlan = TradingPlan.load(from: Workspace.planURL)
     }
 
@@ -61,6 +64,7 @@ struct SettingsView: View {
         s.dailyMaxLossUsd = parsedMoney(maxLossText)
         s.minRankToTrade = minRank
         s.defaultInstrument = defaultInstrument?.rawValue
+        s.launchTVWithLedger = launchTV ? nil : false   // nil = default on
         store.saveSettings(s)
         dismiss()
     }
@@ -262,6 +266,23 @@ struct SettingsView: View {
                     defaultInstrument != nil,
                     planLabel: "auto (last used)"
                 ) { defaultInstrument = nil }
+            }
+        }
+    }
+
+    private var tvLaunchRow: some View {
+        settingRow(
+            "TRADINGVIEW TIE",
+            caption: "Opens TradingView WITH the bridge flag when Ledger starts and TV isn't running. A running TradingView is never touched — ever."
+        ) {
+            HStack(spacing: 10) {
+                Toggle("Launch TradingView with Ledger", isOn: $launchTV)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                Text(launchTV ? "on — one launch, both apps" : "off — open TV yourself")
+                    .font(Theme.monoSmall)
+                    .foregroundColor(launchTV ? Theme.cyan : Theme.textDim)
+                Spacer()
             }
         }
     }

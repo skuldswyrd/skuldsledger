@@ -41,6 +41,9 @@ struct UserSettings: Codable, Equatable {
     var dailyMaxLossUsd: Double?     // defines the plan's UNDEFINED — display + banner only
     var minRankToTrade: Int?
     var defaultInstrument: String?
+    /// Open TradingView (with the CDP bridge flag) when Ledger starts and TV
+    /// isn't already running. nil = on. A running TV is never touched.
+    var launchTVWithLedger: Bool?
 
     static var url: URL {
         Workspace.recordsDir.appendingPathComponent("user_settings.json")

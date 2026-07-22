@@ -28,6 +28,15 @@ struct TradeForm {
     var stopPrice: Double?
     var targetPrice: Double?
     var instrument: Instrument?      // nil = entry's, then session's
+    var side: String?                // "long" / "short" from the sheet's chips
+}
+
+/// What a Settle Day import did — shown in the sheet after confirm.
+struct TVImportSummary {
+    var created = 0
+    var matched = 0
+    var duplicates = 0
+    var phantoms = 0
 }
 
 struct LevelDraft: Identifiable {
@@ -58,8 +67,10 @@ final class SessionStore: ObservableObject {
     @Published var errorMessage: String? {
         didSet {
             // Every surfaced app error also lands in the upgrade log —
-            // paste-ready context for the next patch round.
-            if let msg = errorMessage, msg != oldValue {
+            // paste-ready context for the next patch round. Bridge-state
+            // messages ("TV bridge: …") stay OUT: the status dot already
+            // shows them and logging every blip buried real bugs.
+            if let msg = errorMessage, msg != oldValue, !msg.hasPrefix("TV bridge") {
                 UpgradeLog.append(note: msg, type: "APP-ERROR")
             }
         }
@@ -68,8 +79,12 @@ final class SessionStore: ObservableObject {
     /// Non-nil when the DB could not open — app shows a blocking error screen.
     @Published private(set) var fatalError: String?
     @Published private(set) var mentorAvailable: Bool = true
-    /// TradingView CDP bridge reachable (tv CLI can read the chart).
-    @Published private(set) var tvConnected: Bool = false
+    /// TradingView connection, three rungs: bridge (CDP live) / filesOnly
+    /// (TV up without the debug flag) / closed. Screenshots + mentor work in
+    /// every state — this only gates the optional live-chart level pull.
+    @Published private(set) var tvStatus: TVStatus = .closed
+    /// Legacy convenience — true only when the CDP bridge answers.
+    var tvConnected: Bool { tvStatus == .bridge }
     @Published private(set) var lastLevelSync: Date?
     @Published private(set) var levelSyncBusy: Bool = false
     /// Commits behind origin/main; nil = up to date or unknown.
@@ -102,6 +117,15 @@ final class SessionStore: ObservableObject {
         plan = TradingPlan.load(from: Workspace.planURL).applying(settings)
         Workspace.ensureDayFolders(todayDate)
 
+        // Tied-together launch: TradingView opens WITH the CDP flag whenever
+        // Ledger starts and TV isn't already up. A running TV is never
+        // touched — that is the hard rule.
+        if settings.launchTVWithLedger ?? true {
+            if TVLauncher.launchWithBridgeIfClosed() {
+                scheduleTVStatusRetries()
+            }
+        }
+
         do {
             let database = try AppDatabase.open()
             db = database
@@ -126,7 +150,10 @@ final class SessionStore: ObservableObject {
     private func startTimers() {
         dayCheckTimer?.invalidate()
         dayCheckTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshDayIfNeeded() }
+            Task { @MainActor in
+                self?.refreshDayIfNeeded()
+                await self?.refreshTVStatus()
+            }
         }
         levelSyncTimer?.invalidate()
         levelSyncTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
@@ -149,8 +176,37 @@ final class SessionStore: ObservableObject {
     // MARK: - TradingView status
 
     func refreshTVStatus() async {
-        let alive = await LevelSyncService.cdpAlive()
-        tvConnected = alive && LevelSyncService.locateCLI() != nil
+        tvStatus = await TVLauncher.status()
+    }
+
+    /// TradingView boots in seconds, its CDP socket a beat later — poll a few
+    /// times after WE launched it so the dot goes green without user action.
+    private func scheduleTVStatusRetries() {
+        Task { [weak self] in
+            for delay in [3.0, 8.0, 15.0, 30.0] {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard let self else { return }
+                await self.refreshTVStatus()
+                if self.tvStatus == .bridge { return }
+            }
+        }
+    }
+
+    /// Toolbar action. Closed -> launch with the bridge flag. Running without
+    /// the bridge -> explain the safe path (we NEVER restart a live chart).
+    func openTradingView() {
+        switch tvStatus {
+        case .closed:
+            if TVLauncher.launchWithBridgeIfClosed() {
+                scheduleTVStatusRetries()
+            } else {
+                errorMessage = "TV bridge: TradingView.app not found in /Applications."
+            }
+        case .filesOnly:
+            errorMessage = "TV bridge: TradingView is running without the bridge. Screenshots work fine. For live level pull: quit TradingView yourself when convenient, then click the TV button — Ledger relaunches it with the bridge on. Ledger never restarts a running chart."
+        case .bridge:
+            break
+        }
     }
 
     // MARK: - Updates (git pull from the repo — code only, data stays put)
@@ -549,7 +605,9 @@ final class SessionStore: ObservableObject {
             result: "open",
             instrument: (form.instrument
                 ?? entries.first(where: { $0.id == entryId }).flatMap { Instrument(rawValue: $0.instrument ?? "") }
-                ?? Instrument(rawValue: s.instrument))?.rawValue)
+                ?? Instrument(rawValue: s.instrument))?.rawValue,
+            entryTime: Workspace.isoNow(),
+            side: form.side)
         do {
             try db.save(trade)
             s.tradesTaken += 1
@@ -586,12 +644,167 @@ final class SessionStore: ObservableObject {
         trade.ticksResult = (ticks * 100).rounded() / 100
         trade.usdResult = (usd * 100).rounded() / 100
         trade.result = ticks > 0 ? "win" : (ticks < 0 ? "loss" : "scratch")
+        trade.exitTime = Workspace.isoNow()
+        if trade.side == nil { trade.side = direction > 0 ? "long" : "short" }
         do {
             try db.save(trade)
             reloadAll()
         } catch {
             errorMessage = "Failed to close trade: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Settle Day (TradingView account-history import)
+
+    /// Round trips already journaled — the preview marks them DUP up front.
+    func duplicateTripIds(_ parse: TVImportParse) -> Set<UUID> {
+        guard let db else { return [] }
+        var dupes: Set<UUID> = []
+        for trip in parse.trips {
+            let inst = trip.instrument?.rawValue ?? trip.symbol
+            if (try? db.importedTradeExists(
+                instrument: inst,
+                exitTime: Workspace.isoNow(now: trip.exitTime),
+                exitPrice: trip.exitPrice)) == true {
+                dupes.insert(trip.id)
+            }
+        }
+        return dupes
+    }
+
+    /// Broker fills become journal truth. Per trip: duplicate -> skipped;
+    /// an open manual trade at the same entry -> updated in place
+    /// (reconciled); else a new feed post + trade row tagged tv_import.
+    /// Mentor is NOT called on imported posts (seven robo-reviews = spam).
+    func importTVTrades(_ parse: TVImportParse, plays: [UUID: PlayType], rawText: String) -> TVImportSummary? {
+        guard let db, var s = session else { return nil }
+        var summary = TVImportSummary()
+
+        for trip in parse.trips {
+            let instrumentStr = trip.instrument?.rawValue ?? trip.symbol
+            let exitISO = Workspace.isoNow(now: trip.exitTime)
+            let entryISO = trip.entryTime.map { Workspace.isoNow(now: $0) }
+            if (try? db.importedTradeExists(
+                instrument: instrumentStr, exitTime: exitISO, exitPrice: trip.exitPrice)) == true {
+                summary.duplicates += 1
+                continue
+            }
+
+            let net = ((trip.netUsd) * 100).rounded() / 100
+            let result = net > 0 ? "win" : (net < 0 ? "loss" : "scratch")
+            let tickSize = trip.instrument?.tickSize ?? 0.25
+
+            // Open manual trade at (about) the same entry price -> the broker
+            // row completes it instead of duplicating it.
+            if let idx = trades.firstIndex(where: { t in
+                t.source == nil && t.exitTime == nil && t.result == "open"
+                    && (t.instrument ?? s.instrument) == instrumentStr
+                    && t.entryPrice.map { abs($0 - trip.entryPrice) <= tickSize * 4 } == true
+            }) {
+                var t = trades[idx]
+                t.exitPrice = trip.exitPrice
+                t.ticksResult = trip.ticks.map { ($0 * 100).rounded() / 100 }
+                t.usdResult = net
+                t.result = result
+                t.entryTime = entryISO ?? t.entryTime
+                t.exitTime = exitISO
+                t.side = trip.side
+                t.commission = trip.commissionUsd
+                t.grossUsd = trip.grossUsd
+                t.source = "reconciled"
+                do {
+                    try db.save(t)
+                    summary.matched += 1
+                } catch {
+                    errorMessage = "Settle Day: failed to update a matched trade: \(error.localizedDescription)"
+                }
+                continue
+            }
+
+            // New backfilled post + trade at the broker's entry timestamp.
+            let entryId = UUID().uuidString
+            let caption = String(
+                format: "TV import — %@ %@ %@ → %@ · %@",
+                trip.side.uppercased(), instrumentStr,
+                trimmedPrice(trip.entryPrice), trimmedPrice(trip.exitPrice),
+                signedUsd(net))
+            let entry = EntryRecord(
+                id: entryId,
+                sessionId: s.id,
+                ts: entryISO ?? exitISO,
+                screenshotPath: "",
+                comment: caption,
+                lookingFor: nil,
+                wantToSee: nil,
+                action: "enter",
+                playType: (plays[trip.id] ?? .OFF).rawValue,
+                levelId: nil,
+                mentorReply: nil,
+                mentorClaudeSessionId: nil,
+                instrument: instrumentStr)
+            let trade = TradeRecord(
+                id: UUID().uuidString,
+                entryId: entryId,
+                playType: (plays[trip.id] ?? .OFF).rawValue,
+                levelId: nil,
+                contracts: max(1, trip.units),
+                entryPrice: trip.entryPrice,
+                stopPrice: nil,
+                targetPrice: nil,
+                exitPrice: trip.exitPrice,
+                ticksResult: trip.ticks.map { ($0 * 100).rounded() / 100 },
+                usdResult: net,
+                result: result,
+                instrument: instrumentStr,
+                entryTime: entryISO,
+                exitTime: exitISO,
+                side: trip.side,
+                commission: trip.commissionUsd,
+                grossUsd: trip.grossUsd,
+                source: "tv_import")
+            do {
+                try db.save(entry)
+                try db.save(trade)
+                summary.created += 1
+            } catch {
+                errorMessage = "Settle Day: failed to import a trade: \(error.localizedDescription)"
+            }
+        }
+
+        // Manual rows the broker never produced — surfaced, never deleted.
+        reloadAll()
+        summary.phantoms = trades.filter { $0.source == nil && $0.exitTime == nil }.count
+
+        s.tradesTaken = trades.count
+        try? db.save(s)
+        session = s
+        reloadAll()
+
+        // Raw paste kept beside the day's assets — audit trail + future
+        // MAE replay input.
+        let pasteURL = Workspace.dayDir(todayDate).appendingPathComponent("tv_ledger_paste.txt")
+        try? rawText.write(to: pasteURL, atomically: true, encoding: .utf8)
+
+        return summary
+    }
+
+    private func trimmedPrice(_ v: Double) -> String {
+        var s = String(format: "%.2f", v)
+        while s.hasSuffix("0") { s.removeLast() }
+        if s.hasSuffix(".") { s.removeLast() }
+        return s
+    }
+
+    private func signedUsd(_ v: Double) -> String {
+        (v < 0 ? "-$" : "+$") + String(format: "%.2f", abs(v))
+    }
+
+    // MARK: - Analytics
+
+    /// Lifetime trade feed for the Analytics sheet (all sessions, all days).
+    func analyticsRows() -> [AnalyticsTradeRow] {
+        guard let db else { return [] }
+        return (try? db.allTradesForAnalytics()) ?? []
     }
 
     // MARK: - Levels
@@ -707,7 +920,7 @@ final class SessionStore: ObservableObject {
                 case .success(let chartLevels):
                     do {
                         try self.mergeChartLevels(chartLevels, source: finalSource)
-                        if finalSource == "chart-sync" { self.tvConnected = true }
+                        if finalSource == "chart-sync" { self.tvStatus = .bridge }
                     } catch {
                         if manual { self.errorMessage = "Level sync save failed: \(error.localizedDescription)" }
                     }
@@ -729,7 +942,7 @@ final class SessionStore: ObservableObject {
         let result = await levelSync.fetchLevels()
         switch result {
         case .success(let chartLevels):
-            await MainActor.run { self.tvConnected = true }
+            await MainActor.run { self.tvStatus = .bridge }
             return chartLevels.map { chart in
                 var draft = LevelDraft()
                 draft.name = chart.name

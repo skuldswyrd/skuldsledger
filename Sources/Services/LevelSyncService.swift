@@ -19,12 +19,23 @@ enum LevelSyncError: Error, LocalizedError {
     case failed(String)
     case noLevels
 
+    /// Bridge-class messages start with "TV bridge" — the store shows them
+    /// but keeps them OUT of the upgrade log (bridge state is on the status
+    /// dot now; logging every blip was pure noise). Never suggest restarting
+    /// TradingView — the TV button in the toolbar is the safe path.
     var errorDescription: String? {
         switch self {
-        case .cliNotFound: return "tv CLI not found — install the TradingView bridge."
-        case .timeout: return "TradingView read timed out — is TV running with CDP? (tv launch)"
-        case .failed(let msg): return "TradingView read failed: \(msg)"
-        case .noLevels: return "No ★ cluster labels on the chart — is the Skuld indicator visible?"
+        case .cliNotFound:
+            return "TV bridge: tv CLI not installed — level pull off. Screenshots unaffected."
+        case .timeout:
+            return "TV bridge: chart read timed out — level pull skipped. Screenshots unaffected."
+        case .failed(let msg):
+            let detail = msg.trimmingCharacters(in: .whitespacesAndNewlines)
+            return detail.isEmpty
+                ? "TV bridge: chart read failed. Screenshots unaffected."
+                : "TV bridge: chart read failed — \(detail)"
+        case .noLevels:
+            return "No score labels readable — is the Skuld indicator visible on the chart?"
         }
     }
 }
