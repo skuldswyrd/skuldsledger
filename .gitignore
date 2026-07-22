@@ -1,0 +1,15 @@
+# build artifacts
+build/
+*.xcodeproj/
+DerivedData/
+.DS_Store
+xcuserdata/
+
+# never any user data — belt and suspenders (data lives outside the repo anyway)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+Records/
+Reports/
+inbox/
+assets/

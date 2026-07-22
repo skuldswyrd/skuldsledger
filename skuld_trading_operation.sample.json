@@ -1,0 +1,243 @@
+{
+  "trading_entity": "YOUR NAME Trading",
+  "version": "sample-1.0",
+  "updated": "2026-07-21",
+  "instruments": {
+    "primary": "NQ / MNQ",
+    "secondary": "ES / MES",
+    "session": "NY RTH 09:30-16:00 ET",
+    "auto_tune": {
+      "NQ_MNQ": {
+        "target_ticks": 32,
+        "target_points": 8,
+        "stop_ticks": 48,
+        "stop_points": 12,
+        "cluster_width_points": 2.0,
+        "profile_bin_points": 1.0
+      },
+      "ES_MES": {
+        "target_ticks": 8,
+        "target_points": 2,
+        "stop_ticks": 12,
+        "stop_points": 3,
+        "cluster_width_points": 0.5,
+        "profile_bin_points": 0.25
+      }
+    },
+    "note": "ES numbers scaled from NQ by typical range ratio (~4x). Literal 32-tick ES target = 8 ES points = much bigger move than 8 NQ points. Override in indicator inputs if you want literal 32t on ES."
+  },
+  "edge": {
+    "name": "Price Reactions at Ranked Structural Levels",
+    "thesis": "NY session NQ respects ranked structural levels in BOTH directions: reactions AWAY from a level (reaction wicks larger than the 32-tick target) and the pull INTO a powerful level once price is within the approach window. The stronger the level, the more it earns trades toward and away from it. Wait for price to engage a ranked level, take the fixed-tick trade, exit at target. Patience is the edge.",
+    "plays": {
+      "IB": {
+        "role": "THE set play — only breakout play traded",
+        "rule": "IB = 09:30-10:30 range. N consecutive closes beyond IBH/IBL (default 2) = acceptance. Enter break direction on the acceptance close. Max 1 signal per side per day.",
+        "target": "standard target ticks",
+        "stop": "standard stop ticks"
+      },
+      "MR": {
+        "role": "default play — everything that is not the IB break",
+        "rule": "Price approaches a cluster with rank >= minimum (default 4). Wick tags the level (within tolerance), does NOT pierce deeper than stop distance, close rejects back on the original side with close in the rejection zone (top 40% of bar for longs, bottom 40% for shorts). Enter reaction direction.",
+        "confirm": "volume footprint on DOM/orderflow platform: bottom-heavy = buyers = long reaction, top-heavy = sellers = short reaction. Pine cannot see bid/ask footprint — indicator proxies with close-position + optional relative volume. Footprint stays a manual eyes-on check.",
+        "target": "standard",
+        "stop": "standard; a CLOSE through the level = level broken, stand down on that level"
+      },
+      "BRT": {
+        "role": "continuation play — the punch-through case. OFF by default in the indicator until validated.",
+        "rule": "Level punched (confirmed close beyond by escape margin), then price retests it from the other side within the watch window and holds on close. Enter continuation using the broken level as the launch point. One shot per level per escape.",
+        "target": "standard",
+        "stop": "standard"
+      },
+      "APP": {
+        "role": "toward play — ride INTO a powerful level once close. Strength scales the pull.",
+        "rule": "A cluster with rank >= min_rank_approach sits roughly one target distance ahead (approach window: 1.0-1.5x target points). Price traveling toward it (with-move close, not fresh-rejected at it). Enter toward the level; target lands at/just in front of it. Logic: 32t in front of a strong level nearly always gets wicked; when it doesn't, the trade quality still justified the stop.",
+        "min_rank_approach": 8,
+        "target": "standard target ticks",
+        "stop": "standard; NEVER hold through the level — the level is the exit. Reaction there is a new decision (possible MR the other way).",
+        "status": "manual play for now — journal as APP; indicator signal + backtest validation queued"
+      }
+    },
+    "direction_rules": [
+      "Price falls from above into support cluster + rejection wick + close back above = LONG reaction",
+      "Price rises from below into resistance cluster + rejection wick + close back below = SHORT reaction",
+      "Wick pierces beyond stop distance = punched, no MR entry — becomes a BRT watch",
+      "OPEN QUESTION: v1 JSON said 'price from above at a level = SHORT'. That contradicts bounce logic AND the v1 live-example trades. Indicator implements reaction logic above. Confirm or flip."
+    ]
+  },
+  "level_system": {
+    "static_ranking": "rank = scope + kind. Scope: session 1, day 3, week 5. Kind: POC 5, VAH/VAL 3, period H/L 3, HVN 2, LVN 1. Examples: pwPOC=10, pwVAH=8, pdPOC=8, pdVAH=6, NY-session POC=6, session VAH=4, session LVN=2.",
+    "dynamic_levels_fixed_rank": {
+      "VWAP": 10,
+      "session_day_H_L": 8,
+      "plus_minus_2SD": 6,
+      "ONH_ONL": 6,
+      "IBH_IBL": 4
+    },
+    "clustering": "levels within cluster width (25% of target distance: 2.0 pts NQ / 0.5 pts ES) merge into one cluster. Cluster rank = SUM of member ranks. Cluster price = rank-weighted mean. Confluence literally adds up.",
+    "stars": {
+      "5": "rank >= 10 (VWAP, pwPOC, big clusters)",
+      "4": "8-9 (pdPOC, pwVAH/VAL/H/L, day H/L)",
+      "3": "6-7 (pdVAH/VAL, session POC, ±2SD, ON H/L)",
+      "2": "4-5 (session VAH/VAL/H/L, IB, pdLVN)",
+      "1": "< 4 (session HVN/LVN)"
+    },
+    "min_rank_to_trade": 6,
+    "break_rule": "confirmed close through a cluster beyond escape margin = broken. Never fade a broken level twice. Broken level = BRT launch-pad candidate."
+  },
+  "risk": {
+    "rules": [
+      {
+        "rule": "Max trades per day",
+        "value": "3 — SELF-ENFORCED, temporary scaling-phase rule",
+        "priority": "CRITICAL",
+        "enforced_by": "trader. Indicator counts signals vs plan (SIGNALS row goes red at plan) but never blocks. Market open = opportunities."
+      },
+      {
+        "rule": "Stop discipline",
+        "value": "fixed stop ticks (48t NQ / 12t ES), no exceptions",
+        "priority": "CRITICAL"
+      },
+      {
+        "rule": "Target discipline",
+        "value": "fixed target ticks (32t NQ / 8t ES), exit at target, never hold for more",
+        "priority": "CRITICAL"
+      },
+      {
+        "rule": "Level patience",
+        "value": "price comes to the level; never chase",
+        "priority": "CRITICAL"
+      },
+      {
+        "rule": "Lunch blackout",
+        "value": "11:30-13:30 ET — toggle exists, OFF by default",
+        "priority": "OPTIONAL"
+      },
+      {
+        "rule": "Signal cooldown",
+        "value": "10 bars between signals",
+        "priority": "MEDIUM"
+      },
+      {
+        "rule": "Daily max loss",
+        "value": "UNDEFINED — SPEC GAP. Define a hard stand-down number before scaling.",
+        "priority": "CRITICAL"
+      },
+      {
+        "rule": "Scaling",
+        "value": "milestone jumps per account_plan",
+        "priority": "HIGH"
+      }
+    ]
+  },
+  "expectancy_math": {
+    "note": "arithmetic only, not advice",
+    "breakeven_winrate_target8_stop12": "60%",
+    "breakeven_winrate_target8_stop10": "55.6%",
+    "ev_at_70pct_winrate_stop12_pts_per_trade": 2.0,
+    "v1_table_correction": "v1 daily_reality used loss = target size. Real loss at a 12-pt stop is 1.5x the win. Corrected loss column in account_plan below. v1 also listed 1 NQ risk as 16% — even by its own numbers ($160/$2000) that is 8%."
+  },
+  "account_plan": {
+    "starting_capital": 1000,
+    "currency": "USD",
+    "scaling_strategy": "Jump contracts when milestone hit — EDIT to your own account",
+    "milestones": [
+      {
+        "account_balance": 1000,
+        "contracts": "2 MNQ",
+        "usd_per_point": 4,
+        "win_at_target_usd": 32,
+        "loss_at_12pt_stop_usd": -48,
+        "risk_pct_at_stop": 4.8,
+        "daily_target_usd": 67
+      },
+      {
+        "account_balance": 1200,
+        "contracts": "3 MNQ",
+        "usd_per_point": 6,
+        "win_at_target_usd": 48,
+        "loss_at_12pt_stop_usd": -72,
+        "risk_pct_at_stop": 6.0,
+        "daily_target_usd": 101
+      },
+      {
+        "account_balance": 1500,
+        "contracts": "4 MNQ",
+        "usd_per_point": 8,
+        "win_at_target_usd": 64,
+        "loss_at_12pt_stop_usd": -96,
+        "risk_pct_at_stop": 6.4,
+        "daily_target_usd": 134
+      }
+    ],
+    "flag": "SAMPLE numbers. This is the file the app and mentor read live — make it YOUR plan before trading."
+  },
+  "indicator": {
+    "name": "Skuld Unified v1",
+    "file": "Skuld_Unified_v1.pine",
+    "replaces_for_execution": [
+      "Skuld Levels v3",
+      "Skuld Target Engine v3",
+      "Playbook Map v3"
+    ],
+    "kept_separate": [
+      "Skuld Scanner v2 (passive 8-grid)",
+      "Skuld Tsutsumi (pattern study)"
+    ],
+    "modes": {
+      "structure": "chart TF >= switch TF (default 1H): weekly+daily ranked cluster map + developing week profile. No signals.",
+      "execution": "chart TF < switch TF: session VP histogram, session VWAP ±1σ/±2σ, ONH/ONL, IB lines, full cluster map (sessions included), IB/MR/BRT signals any time bars print (RTH-only toggle off by default), trade plan lines that terminate on TP/SL with outcome stamp, signals-vs-plan counter (display only)."
+    },
+    "signals": {
+      "IB": "triangle, acceptance break",
+      "MR": "triangle, reaction at ranked level",
+      "BRT": "diamond, break-retest continuation"
+    },
+    "alerts": "single 'Any alert() function call' alert covers every signal with entry/stop/target text",
+    "settings": "all colors, line styles, widths per scope, VP rows/width/transparency, sessions, ranks, widths, discipline caps exposed as inputs"
+  },
+  "sop": {
+    "pre_market": [
+      "Open execution chart (5m/15m) — cluster map + stars auto-built from prior week/day/session profiles",
+      "Check structure chart (1H/4H) — weekly/daily map, note any ★★★★+ cluster within one day's range",
+      "Note ONH/ONL, gap vs prior settle",
+      "Rank check: which clusters sit within 25% width of each other (auto-merged, higher stars)",
+      "Confirm max-3 counter reset, alerts armed"
+    ],
+    "during_session": [
+      "Wait. Price comes to a starred cluster or the IB acceptance fires",
+      "Footprint check on DOM at the touch (manual — indicator proxy is not a footprint)",
+      "Take signal, orders at plan lines: entry, fixed stop, fixed target",
+      "Exit at target. Screenshot. Journal line.",
+      "Close through a level = broken: no re-fade, watch for BRT diamond",
+      "3 trades done = done. Panel says DONE."
+    ],
+    "end_of_day": [
+      "Journal: which clusters held vs broke, star-rank vs outcome",
+      "P&L, milestone check",
+      "Weekly: re-rank — do ★★★★+ clusters outperform ★★? Adjust min rank input from data, not feel"
+    ]
+  },
+  "journal_schema": {
+    "per_trade": [
+      "timestamp",
+      "play (IB/MR/BRT/APP)",
+      "cluster name + stars",
+      "entry/stop/target",
+      "exit price",
+      "ticks result",
+      "footprint note",
+      "screenshot"
+    ],
+    "per_day": [
+      "signals offered vs taken",
+      "levels held vs broke by star rank",
+      "P&L",
+      "balance",
+      "milestone status"
+    ]
+  },
+  "open_items": [
+    "Define YOUR daily max loss before trading real size — the app surfaces it but will not invent it."
+  ]
+}
