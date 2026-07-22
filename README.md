@@ -2,7 +2,6 @@
 
 **A live trading session journal that works like an X feed — with an AI mentor in your corner.**
 
-*Skuld*: the Norse norn of what-shall-be. Also, literally, "debt." This is where you book what you owe the plan.
 
 ## What it is
 
