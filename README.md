@@ -27,7 +27,9 @@ Every post gets a mentor read powered by Claude, through the **Claude Code CLI y
 
 ## The system it serves
 
-Built around a level-based futures method (NQ/MNQ, ES/MES): ranked structural levels from volume profile (POC / value area / session extremes), traded toward and away from with fixed tick targets and stops, hard trade-count discipline. The plan lives in a JSON file the app parses live — edit the plan, the app follows. A companion TradingView indicator (Skuld Unified) marks the same levels on the chart; its alert text pastes straight into the trade sheet.
+Built around a level-based futures method (NQ/MNQ, ES/MES): ranked structural levels from volume profile (POC / value area / session extremes), traded toward and away from with fixed tick targets and stops, hard trade-count discipline. The plan lives in a JSON file the app parses live — edit the plan, the app follows.
+
+The companion TradingView indicator ships in this repo too — **[indicator/](indicator/)** — same ranked levels drawn and scored on the chart, one alert covering every play, alert text that pastes straight into the trade sheet. App and indicator update from this single location.
 
 You don't have to trade this exact method — edit `skuld_trading_operation.json` to your own numbers and plays.
 

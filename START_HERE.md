@@ -28,7 +28,9 @@ Clone https://github.com/skuldswyrd/skuldsledger.git into ~/skuldsledger (instal
 
 That's it. Claude Code installs dependencies, builds the app locally, puts **Skulds Ledger** in `~/Applications`, creates your `~/Desktop/Trading` workspace with a sample trading plan, and launches it.
 
-## After install — 2 minutes of setup
+## After install — 2 minutes of setup (+ the chart indicator)
+
+0. **TradingView indicator**: open `~/skuldsledger/indicator/Skuld_Unified.pine`, paste it into TradingView's Pine Editor, add to chart, and create one alert on "Any alert() function call". Full guide: [indicator/README.md](indicator/README.md). When the repo updates the indicator, re-paste the same file.
 
 1. **TradingView screenshots**: in TradingView, set your chart-image save folder to `~/ChartGrabsTradingView` (or any folder — tell the app via `defaults write com.skuld.SkuldsLedger tvInboxDir "<path>"`). Every `cmd+s` then lands straight in the composer.
 2. **Your plan**: edit `~/Desktop/Trading/skuld_trading_operation.json` — targets, stops, max trades, plays. The app and the mentor read it live. It ships as a sample; make it yours.

@@ -1,0 +1,1165 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+//  SKULD UNIFIED v2 — one indicator, self-switching by chart timeframe.
+//
+//  v2.1 (2026-07-21): APP toward-play — ride INTO a powerful level once
+//     inside the approach window (1.0-1.5x target). With-move close, level
+//     untouched in the lookback, one shot per level. Target lands at/just in
+//     front of the level — never hold through it.
+//  v2 (2026-07-21): DEVELOPING LEVELS ENGINE + VP visual overhaul.
+//   · Live developing levels are first-class ranked levels now:
+//       sPOC  (developing session POC)  rank 6 (session 1 + POC 5)
+//       sVAH/sVAL (developing session VA) rank 4 (session 1 + VA 3)
+//       dPOC  (developing DAY POC)        rank 8 (day 3 + POC 5)
+//       dVAH/dVAL (developing day VA)     rank 6 (day 3 + VA 3)
+//     Recomputed on every confirmed close from the fine-bin profiles,
+//     drawn + ★-labeled, included in the MR pool and NEAREST panel.
+//     The chart finally reacts to the CURRENT session, not just priors.
+//   · VP style input: "Lines" (default — clean, draw your own profiles),
+//     "Bars" (right-edge anchored, borderless thin rows), "Off".
+//   · Defaults follow the 2026-07-21 shipped tuning: wick 0.55, cooldown 5,
+//     tol 2×W, lunch/RTH-only/hard-cap gates OFF (all are toggles — flip for
+//     strict plan mode). Dev-level signals test the LAST CONFIRMED level
+//     snapshot; dev lines refresh on the first confirmed close after a
+//     session roll (one live bar of lag at the boundary is by design).
+//
+//  ≥ switch TF (default 1H)  → STRUCTURE mode: weekly + daily ranked level
+//     map, composite profile, clusters. No signals — this is the map.
+//  < switch TF               → EXECUTION mode: session VWAP ±1σ/±2σ, ranked
+//     level clusters, developing levels, and the plays:
+//       IB  — THE set play: initial-balance acceptance break (9:30–10:30 ET)
+//       MR  — everything else: reaction wick at a high-rank cluster
+//       BRT — punched level retested from the other side and held
+//       APP — approach: ride into a powerful level inside the window
+//
+//  LEVEL RANKING:  rank = scope + kind.
+//     scope: session 1 · day 3 · week 5
+//     kind:  POC 5 · VAH/VAL 3 · H/L 3 · HVN 2 · LVN 1
+//     dynamic (fixed): VWAP 10 · day H/L 8 · dPOC 8 · ±2σ 6 · ONH/ONL 6 ·
+//                      sPOC 6 · dVAH/dVAL 6 · IB 4 · sVAH/sVAL 4
+//  CLUSTERING: levels within cluster width merge; rank = SUM; price =
+//     rank-weighted mean. stars: ≥10 ★★★★★ · 8–9 ★★★★ · 6–7 ★★★ · 4–5 ★★ · ★
+//
+//  Candle-close confirmed only. No lookahead. No repaint.
+//  One alert covers all: "Any alert() function call".
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("Skuld Unified v2 — Levels · IB · MR · BRT · Dev Levels", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// ── ASSET AUTO-TUNE ────────────────────────────────────────────────────────
+bool isES = syminfo.root == "ES" or syminfo.root == "MES"
+
+// ── INPUTS ─────────────────────────────────────────────────────────────────
+const string TZ = "America/New_York"
+const string GM = "Mode & trade math"
+const string GS = "Sessions (ET)"
+const string GP = "Profile engine"
+const string GK = "Level ranking & clusters"
+const string GV = "Session volume profile"
+const string GE = "Developing levels (live)"
+const string GW = "VWAP & dynamic levels"
+const string GI = "Play · IB (the set play)"
+const string GR = "Play · MR (reaction at level)"
+const string GB = "Play · BRT (break-retest continuation)"
+const string GA = "Play · APP (toward a powerful level)"
+const string GT = "Discipline & trade plan"
+const string GD = "Dashboard"
+const string GC = "Colors & lines"
+
+string inModeTf = input.timeframe("60", "Structure mode at/above TF", group = GM, tooltip = "Chart TF >= this = STRUCTURE map (no signals). Below = EXECUTION mode.")
+int inTgtT  = input.int(0, "Target ticks (0 = auto: 32 NQ / 8 ES)", minval = 0, group = GM)
+int inStopT = input.int(0, "Stop ticks (0 = auto: 48 NQ / 12 ES)", minval = 0, group = GM)
+
+string rthSess   = input.session("0930-1600", "NY RTH (VWAP reset · signal window · NY profile)", group = GS)
+string ibSess    = input.session("0930-1030", "Initial balance window", group = GS)
+string onSess    = input.session("1800-0930", "Overnight (ONH/ONL)", group = GS)
+string sAsia     = input.session("1800-0300", "Asia session profile", group = GS)
+string sLdn      = input.session("0300-0930", "London session profile", group = GS)
+
+int    inRows  = input.int(24, "Extraction rows per profile", minval = 6, maxval = 60, group = GP)
+float  inVA    = input.float(70, "Value area %", minval = 50, maxval = 95, group = GP)
+float  inHvnK  = input.float(1.5, "HVN ≥ × avg row volume", step = 0.1, group = GP)
+float  inLvnK  = input.float(0.5, "LVN ≤ × avg row volume", step = 0.1, group = GP)
+int    inMaxHV = input.int(1, "Max HVN per profile", minval = 0, maxval = 3, group = GP)
+int    inMaxLV = input.int(1, "Max LVN per profile", minval = 0, maxval = 3, group = GP)
+float  inBin   = input.float(0.0, "Fine bin pts (0 = auto: 1.0 NQ / 0.25 ES)", minval = 0, group = GP)
+string inLtf   = input.timeframe("", "Intrabar TF (blank = auto)", group = GP)
+
+float inClW     = input.float(0.0, "Cluster width pts (0 = auto: 25% of target)", minval = 0, group = GK)
+int   inMinRank = input.int(6, "Min rank to trade a level", minval = 1, maxval = 20, group = GK, tooltip = "MR/BRT fire only on clusters/levels at or above this rank. 6 = ★★★ up. 8 = ★★★★ up. 10 = ★★★★★ only.")
+bool  showLvls  = input.bool(true, "Draw cluster lines + labels", group = GK)
+int   inMaxL    = input.int(12, "Max clusters shown (nearest kept)", minval = 2, maxval = 40, group = GK)
+float inHide    = input.float(0, "Hide clusters farther than (pts, 0 = off)", minval = 0, group = GK)
+int   inOff     = input.int(8, "Label offset (bars right)", minval = 1, maxval = 50, group = GK)
+bool  showPx    = input.bool(true, "Show price in labels", group = GK)
+
+string inVpStyle  = input.string("Lines", "Profile style", options = ["Lines", "Bars", "Off"], group = GV, tooltip = "Lines = no histogram, developing levels only (draw profiles by hand). Bars = borderless histogram. Off = nothing.")
+string inVpAnchor = input.string("Right edge", "Bars anchor", options = ["Right edge", "Session start"], group = GV)
+string inVpSrc    = input.string("Auto", "Profile source", options = ["Auto", "Session", "Day", "Week"], group = GV, tooltip = "Auto = active session in execution mode, developing week in structure mode.")
+int    inVpRows   = input.int(30, "Histogram rows", minval = 10, maxval = 60, group = GV)
+int    inVpWide   = input.int(14, "Histogram max width (bars)", minval = 5, maxval = 100, group = GV)
+
+bool showDevS   = input.bool(true, "Developing session POC/VAH/VAL (sPOC ★★★ · sVA ★★)", group = GE)
+bool showDevD   = input.bool(true, "Developing day POC/VAH/VAL (dPOC ★★★★ · dVA ★★★)", group = GE)
+bool inclDevMR  = input.bool(true, "Developing levels fire MR", group = GE, tooltip = "sPOC rank 6, sVAH/sVAL 4, dPOC 8, dVAH/dVAL 6 — gated by min rank like everything else.")
+
+bool showVwap = input.bool(true, "Session VWAP + ±1σ", group = GW)
+bool showSd2  = input.bool(true, "±2σ band", group = GW)
+bool showOn   = input.bool(true, "ONH/ONL lines", group = GW)
+
+bool enIB     = input.bool(true, "Enable IB play", group = GI)
+int  inAcc    = input.int(2, "Acceptance closes beyond IB", minval = 1, maxval = 5, group = GI)
+int  inMaxBrk = input.int(1, "Max IB signals per side per day", minval = 1, maxval = 3, group = GI)
+
+bool  enMR     = input.bool(true, "Enable MR play", group = GR)
+float inWick   = input.float(0.55, "Rejection: close position ≥ (0.5–1)", minval = 0.5, maxval = 1, step = 0.05, group = GR, tooltip = "Long: close must sit in top fraction of bar range. Short mirrored.")
+float inMrTol  = input.float(0.0, "Touch tolerance pts (0 = auto: 2× cluster width — 4 NQ / 1 ES)", minval = 0, group = GR)
+bool  useVolMR = input.bool(false, "Require volume ≥ × avg (footprint proxy)", group = GR)
+float volKMR   = input.float(1.2, "Volume multiple", step = 0.1, group = GR)
+bool  inclVwap = input.bool(true, "Include VWAP (rank 10)", group = GR)
+bool  inclSd2  = input.bool(true, "Include ±2σ (rank 6)", group = GR)
+bool  inclDay  = input.bool(true, "Include session day H/L (rank 8)", group = GR)
+bool  inclON   = input.bool(true, "Include ONH/ONL (rank 6)", group = GR)
+
+bool  enBRT     = input.bool(false, "Enable BRT play (break-retest)", group = GB, tooltip = "OFF by default — IB + MR only.")
+float inBrtEsc  = input.float(0.0, "Escape margin pts (0 = auto: cluster width)", minval = 0, group = GB)
+int   inBrtWatch = input.int(20, "Retest watch window (bars)", minval = 2, maxval = 100, group = GB)
+
+bool  enAPP        = input.bool(true, "Enable APP play (toward)", group = GA, tooltip = "Ride INTO a powerful level once inside the approach window. Target lands at/just in front of the level — never hold through it; the reaction there is a new decision.")
+int   inAppRank    = input.int(8, "Min rank of destination level", minval = 4, maxval = 30, group = GA)
+float inAppNear    = input.float(1.0, "Window near edge (× target)", minval = 0.5, step = 0.1, group = GA, tooltip = "Level must be at least this many target-distances away, so the fixed target lands in FRONT of the level.")
+float inAppFar     = input.float(1.5, "Window far edge (× target)", minval = 0.6, step = 0.1, group = GA)
+float inAppPos     = input.float(0.55, "With-move close position ≥", minval = 0.5, maxval = 1, step = 0.05, group = GA)
+int   inAppNoTouch = input.int(10, "Level untouched for (bars)", minval = 2, maxval = 100, group = GA, tooltip = "No wick within tolerance of the level in this lookback — do not chase into a level that just rejected.")
+bool  inAppDyn     = input.bool(true, "Include dynamic levels (VWAP · day H/L · dPOC · ±2σ · ON)", group = GA)
+
+int  inMaxSig = input.int(3, "Max signals per day (3-trade rule)", minval = 1, maxval = 10, group = GT)
+bool inHardCap = input.bool(false, "Hard-stop signals at max", group = GT, tooltip = "ON = indicator stops firing after max (plan: 'indicator stops signaling after 3 fires'). OFF = counter keeps counting, signals keep coming — display-only discipline.")
+bool inRthOnly = input.bool(false, "Signals only in NY RTH", group = GT, tooltip = "OFF = signals also fire overnight/Globex sessions.")
+int  inCd     = input.int(5, "Cooldown bars between signals", minval = 0, group = GT)
+bool useLunch = input.bool(false, "Lunch blackout", group = GT)
+string lunchSess = input.session("1130-1330", "Lunch window (ET)", group = GT)
+bool showPlan = input.bool(true, "Draw entry / stop / T1 on signal (auto-ends on TP/SL hit)", group = GT)
+
+bool showDash = input.bool(true, "Status panel", group = GD)
+
+color colS5   = input.color(#ffd54f, "★★★★★ cluster", group = GC)
+color colS4   = input.color(#ff9800, "★★★★ cluster", group = GC)
+color colS3   = input.color(#2962ff, "★★★ cluster", group = GC)
+color colS2   = input.color(#787b86, "★★ cluster", group = GC)
+color colS1   = input.color(#4c5158, "★ cluster", group = GC)
+color colVpOut = input.color(#3a3e47, "VP rows outside VA", group = GC)
+color colVpVa  = input.color(#2962ff, "VP rows inside VA", group = GC)
+color colVpPoc = input.color(#ff9800, "VP POC row / dev POC", group = GC)
+int   inVpTr   = input.int(80, "VP transparency", minval = 0, maxval = 95, group = GC)
+color colDevVa = input.color(#00bcd4, "Dev VAH/VAL", group = GC)
+color colVwap = input.color(#00bcd4, "VWAP", group = GC)
+color colBand = input.color(#9598a1, "σ bands", group = GC)
+color colOn   = input.color(#26a69a, "ONH/ONL", group = GC)
+color colUp   = input.color(#00FF00, "Long signals / T1", group = GC)
+color colDn   = input.color(#673ab7, "Short signals / stop", group = GC)
+color colText = input.color(#d1d4dc, "Labels / plan text", group = GC)
+string inSty  = input.string("Solid", "Cluster line style", options = ["Solid", "Dashed", "Dotted"], group = GC)
+int inWidW = input.int(3, "Line width · weekly-scope cluster", minval = 1, maxval = 5, group = GC)
+int inWidD = input.int(2, "Line width · daily-scope cluster", minval = 1, maxval = 5, group = GC)
+int inWidS = input.int(1, "Line width · session-scope cluster", minval = 1, maxval = 5, group = GC)
+
+// ── DERIVED ────────────────────────────────────────────────────────────────
+int   tfSec   = timeframe.in_seconds(timeframe.period)
+int   barMs   = tfSec * 1000
+bool  htfMode = tfSec >= timeframe.in_seconds(inModeTf)
+int   tgtT    = inTgtT > 0 ? inTgtT : isES ? 8 : 32
+int   stopT   = inStopT > 0 ? inStopT : isES ? 12 : 48
+float tgtPts  = tgtT * syminfo.mintick
+float stopPts = stopT * syminfo.mintick
+float fineBin = inBin > 0 ? inBin : isES ? 0.25 : 1.0
+float clustW  = inClW > 0 ? inClW : 0.25 * tgtPts
+float mrTol   = inMrTol > 0 ? inMrTol : 2 * clustW
+float brtEsc  = inBrtEsc > 0 ? inBrtEsc : clustW
+string ltfStr = inLtf != "" ? inLtf : tfSec >= 3600 ? "5" : tfSec >= 60 ? "1" : "1S"
+string prSty  = inSty == "Dashed" ? line.style_dashed : inSty == "Dotted" ? line.style_dotted : line.style_solid
+
+// global series used inside functions — must exist before function defs
+float cPrev  = close[1]
+float cPrev2 = close[2]
+float loW    = math.min(low, low[1])
+float hiW    = math.max(high, high[1])
+float barRng = high - low
+float cPos   = barRng > 0 ? (close - low) / barRng : 0.5
+float volSma = ta.sma(volume, 20)
+float relVol = volSma > 0 ? nz(volume) / volSma : 1.0
+float appHiN = ta.highest(high, inAppNoTouch)
+float appLoN = ta.lowest(low, inAppNoTouch)
+
+// sessions
+bool inRTH   = not na(time(timeframe.period, rthSess, TZ))
+bool inIBw   = not na(time(timeframe.period, ibSess, TZ))
+bool inON    = not na(time(timeframe.period, onSess, TZ))
+bool inA     = not na(time(timeframe.period, sAsia, TZ))
+bool inL     = not na(time(timeframe.period, sLdn, TZ))
+bool inLunch = not na(time(timeframe.period, lunchSess, TZ))
+bool newRTH  = inRTH and not inRTH[1]
+
+// ── TYPES & FUNCTIONS ──────────────────────────────────────────────────────
+type Prof
+    array<float> vol
+    int   base
+    float lo
+    float hi
+
+type Lvl
+    float  price
+    string name
+    int    rank
+    int    scope   // 1 session · 2 day · 3 week
+
+f_newProf() =>
+    Prof.new(array.new<float>(), 0, na, na)
+
+f_add(Prof p, float pr, float v) =>
+    float vv = nz(v)
+    int k = int(math.floor(pr / fineBin))
+    if array.size(p.vol) == 0
+        p.base := k
+        array.push(p.vol, vv)
+    else
+        while k < p.base
+            array.unshift(p.vol, 0.0)
+            p.base := p.base - 1
+        while k > p.base + array.size(p.vol) - 1
+            array.push(p.vol, 0.0)
+        array.set(p.vol, k - p.base, array.get(p.vol, k - p.base) + vv)
+    p.hi := na(p.hi) ? pr : math.max(p.hi, pr)
+    p.lo := na(p.lo) ? pr : math.min(p.lo, pr)
+
+f_stretch(Prof p, float h, float l) =>
+    p.hi := na(p.hi) ? h : math.max(p.hi, h)
+    p.lo := na(p.lo) ? l : math.min(p.lo, l)
+
+// Developing POC / VAH / VAL straight off the fine bins — the live read.
+// Returns [poc, vah, val]; na tuple while the profile is still empty.
+f_devPVV(Prof p) =>
+    float poc = na
+    float vah = na
+    float val = na
+    int nb = array.size(p.vol)
+    if nb > 0 and not na(p.lo) and not na(p.hi) and p.hi > p.lo
+        float tot = 0.0
+        int pocB = 0
+        float mxB = -1.0
+        for i = 0 to nb - 1
+            float bv = array.get(p.vol, i)
+            tot += bv
+            if bv > mxB
+                mxB := bv
+                pocB := i
+        if tot > 0
+            float vaVol = array.get(p.vol, pocB)
+            int up = pocB + 1
+            int dn = pocB - 1
+            while vaVol < tot * inVA / 100.0
+                float vu = up <= nb - 1 ? array.get(p.vol, up) : -1.0
+                float vd = dn >= 0 ? array.get(p.vol, dn) : -1.0
+                if vu < 0 and vd < 0
+                    break
+                if vu >= vd
+                    vaVol += vu
+                    up += 1
+                else
+                    vaVol += vd
+                    dn -= 1
+            poc := (p.base + pocB + 0.5) * fineBin
+            vah := (p.base + up) * fineBin
+            val := (p.base + dn + 1) * fineBin
+    [poc, vah, val]
+
+// completed profile → ranked levels. rank = scope + kind.
+f_levels(Prof p, string pre, int scope) =>
+    array<Lvl> out = array.new<Lvl>()
+    int nb = array.size(p.vol)
+    if nb > 0 and not na(p.lo) and not na(p.hi) and p.hi > p.lo
+        float rowH = (p.hi - p.lo) / inRows
+        array<float> rv = array.new<float>(inRows, 0.0)
+        float tot = 0.0
+        for i = 0 to nb - 1
+            float bv = array.get(p.vol, i)
+            if bv > 0
+                float pr = (p.base + i + 0.5) * fineBin
+                int ri = math.min(inRows - 1, math.max(0, int(math.floor((pr - p.lo) / rowH))))
+                array.set(rv, ri, array.get(rv, ri) + bv)
+                tot += bv
+        if tot > 0
+            // row POC index — kept only to exclude the POC row from HVN picks
+            int pocI = 0
+            float mx = -1.0
+            for i = 0 to inRows - 1
+                if array.get(rv, i) > mx
+                    mx := array.get(rv, i)
+                    pocI := i
+            // tick-accurate POC / VA off the fine bins — identical on every chart TF
+            int pocB = 0
+            float mxB = -1.0
+            for i = 0 to nb - 1
+                if array.get(p.vol, i) > mxB
+                    mxB := array.get(p.vol, i)
+                    pocB := i
+            float vaVol = array.get(p.vol, pocB)
+            int up = pocB + 1
+            int dn = pocB - 1
+            while vaVol < tot * inVA / 100.0
+                float vu = up <= nb - 1 ? array.get(p.vol, up) : -1.0
+                float vd = dn >= 0 ? array.get(p.vol, dn) : -1.0
+                if vu < 0 and vd < 0
+                    break
+                if vu >= vd
+                    vaVol += vu
+                    up += 1
+                else
+                    vaVol += vd
+                    dn -= 1
+            float avgRow = tot / inRows
+            int kS = scope == 3 ? 5 : scope == 2 ? 3 : 1
+            out.push(Lvl.new((p.base + pocB + 0.5) * fineBin, pre + "POC", kS + 5, scope))
+            out.push(Lvl.new((p.base + up) * fineBin, pre + "VAH", kS + 3, scope))
+            out.push(Lvl.new((p.base + dn + 1) * fineBin, pre + "VAL", kS + 3, scope))
+            if inMaxHV > 0
+                array<int> usedH = array.new<int>()
+                for c = 1 to inMaxHV
+                    int bi = -1
+                    float bb = -1.0
+                    for i = 1 to inRows - 2
+                        float v0 = array.get(rv, i)
+                        if i != pocI and v0 >= inHvnK * avgRow and v0 > array.get(rv, i - 1) and v0 >= array.get(rv, i + 1) and not array.includes(usedH, i) and v0 > bb
+                            bb := v0
+                            bi := i
+                    if bi >= 0
+                        usedH.push(bi)
+                        out.push(Lvl.new(p.lo + (bi + 0.5) * rowH, pre + "HVN", kS + 2, scope))
+            if inMaxLV > 0
+                array<int> usedL = array.new<int>()
+                for c = 1 to inMaxLV
+                    int bi = -1
+                    float bb = 1.0e18
+                    for i = 1 to inRows - 2
+                        float v0 = array.get(rv, i)
+                        if v0 <= inLvnK * avgRow and v0 < array.get(rv, i - 1) and v0 < array.get(rv, i + 1) and not array.includes(usedL, i) and v0 < bb
+                            bb := v0
+                            bi := i
+                    if bi >= 0
+                        usedL.push(bi)
+                        out.push(Lvl.new(p.lo + (bi + 0.5) * rowH, pre + "LVN", kS + 1, scope))
+            out.push(Lvl.new(p.hi, pre + "H", kS + 3, scope))
+            out.push(Lvl.new(p.lo, pre + "L", kS + 3, scope))
+    out
+
+f_gather(array<Lvl> src, array<float> gp, array<int> gr, array<int> gs, array<string> gn) =>
+    for x in src
+        gp.push(x.price)
+        gr.push(x.rank)
+        gs.push(x.scope)
+        gn.push(x.name)
+    true
+
+// merge levels within width w into clusters. rank = sum, price = rank-weighted.
+f_clusters(array<Lvl> aW, array<Lvl> aD, array<Lvl> aA, array<Lvl> aL, array<Lvl> aN, bool useSess, float w, array<float> clP, array<float> clR, array<int> clS, array<string> clN, array<int> clSt, array<int> clEB) =>
+    clP.clear()
+    clR.clear()
+    clS.clear()
+    clN.clear()
+    clSt.clear()
+    clEB.clear()
+    array<float> gp = array.new<float>()
+    array<int> gr = array.new<int>()
+    array<int> gs = array.new<int>()
+    array<string> gn = array.new<string>()
+    f_gather(aW, gp, gr, gs, gn)
+    f_gather(aD, gp, gr, gs, gn)
+    if useSess
+        f_gather(aA, gp, gr, gs, gn)
+        f_gather(aL, gp, gr, gs, gn)
+        f_gather(aN, gp, gr, gs, gn)
+    int n = gp.size()
+    if n > 0
+        array<int> ord = array.sort_indices(gp)
+        float wSum = 0.0
+        float rSum = 0.0
+        int sMax = 0
+        string nAcc = ""
+        int cnt = 0
+        float lastP = na
+        for r = 0 to n - 1
+            int k = ord.get(r)
+            float p = gp.get(k)
+            bool merge = cnt > 0 and p - lastP <= w
+            if not merge and cnt > 0
+                clP.push(wSum / rSum)
+                clR.push(rSum)
+                clS.push(sMax)
+                clN.push(nAcc)
+                clSt.push(0)
+                clEB.push(0)
+                wSum := 0.0
+                rSum := 0.0
+                sMax := 0
+                nAcc := ""
+                cnt := 0
+            wSum += p * gr.get(k)
+            rSum += gr.get(k)
+            sMax := math.max(sMax, gs.get(k))
+            nAcc := cnt == 0 ? gn.get(k) : cnt < 3 ? nAcc + "+" + gn.get(k) : cnt == 3 ? nAcc + "+…" : nAcc
+            cnt += 1
+            lastP := p
+        if cnt > 0
+            clP.push(wSum / rSum)
+            clR.push(rSum)
+            clS.push(sMax)
+            clN.push(nAcc)
+            clSt.push(0)
+            clEB.push(0)
+    true
+
+// MR reaction test at one level. Returns 1 long, -1 short, 0 none.
+f_mrTest(float lvl) =>
+    int d = 0
+    if not na(lvl)
+        // touch may land on this bar OR the prior bar; rejection close is this bar
+        if (cPrev > lvl or cPrev2 > lvl) and loW <= lvl + mrTol and loW >= lvl - stopPts and close > lvl and cPos >= inWick
+            d := 1
+        else if (cPrev < lvl or cPrev2 < lvl) and hiW >= lvl - mrTol and hiW <= lvl + stopPts and close < lvl and cPos <= 1 - inWick
+            d := -1
+    d
+
+f_stars(float r) =>
+    r >= 10 ? 5 : r >= 8 ? 4 : r >= 6 ? 3 : r >= 4 ? 2 : 1
+
+f_starTxt(int s) =>
+    s == 5 ? "★★★★★" : s == 4 ? "★★★★" : s == 3 ? "★★★" : s == 2 ? "★★" : "★"
+
+// Exact score display — the raw summed rank, uncapped. One math for every
+// level; stars remain only as color bands.
+f_scoreTxt(float r) =>
+    "[" + str.tostring(int(math.round(r))) + "]"
+
+f_starCol(int s) =>
+    s == 5 ? colS5 : s == 4 ? colS4 : s == 3 ? colS3 : s == 2 ? colS2 : colS1
+
+// developing profile → display rows for the histogram
+f_rows(Prof p, int rowsN) =>
+    array<float> rv = array.new<float>(rowsN, 0.0)
+    float lo = p.lo
+    float rowH = na
+    float tot = 0.0
+    int pocI = 0
+    int uI = 0
+    int dI = 0
+    int nb = array.size(p.vol)
+    if nb > 0 and not na(p.lo) and not na(p.hi) and p.hi > p.lo
+        rowH := (p.hi - p.lo) / rowsN
+        for i = 0 to nb - 1
+            float bv = array.get(p.vol, i)
+            if bv > 0
+                float pr = (p.base + i + 0.5) * fineBin
+                int ri = math.min(rowsN - 1, math.max(0, int(math.floor((pr - lo) / rowH))))
+                rv.set(ri, rv.get(ri) + bv)
+                tot += bv
+        if tot > 0
+            float mx = -1.0
+            for i = 0 to rowsN - 1
+                if rv.get(i) > mx
+                    mx := rv.get(i)
+                    pocI := i
+            float vaVol = rv.get(pocI)
+            uI := pocI + 1
+            dI := pocI - 1
+            while vaVol < tot * inVA / 100.0
+                float vu = uI <= rowsN - 1 ? rv.get(uI) : -1.0
+                float vd = dI >= 0 ? rv.get(dI) : -1.0
+                if vu < 0 and vd < 0
+                    break
+                if vu >= vd
+                    vaVol += vu
+                    uI += 1
+                else
+                    vaVol += vd
+                    dI -= 1
+    [rv, lo, rowH, tot, pocI, uI, dI]
+
+f_row(table t, int r, string k, string v, color bg) =>
+    table.cell(t, 0, r, k, text_color = color.white, text_size = size.tiny, bgcolor = color.new(#000000, 0))
+    table.cell(t, 1, r, v, text_color = color.white, text_size = size.tiny, bgcolor = bg)
+
+// ── STATE ──────────────────────────────────────────────────────────────────
+var Prof dP = f_newProf()
+var Prof wP = f_newProf()
+var Prof aP = f_newProf()
+var Prof lP = f_newProf()
+var Prof nP = f_newProf()
+var array<Lvl> priorD = array.new<Lvl>()
+var array<Lvl> priorW = array.new<Lvl>()
+var array<Lvl> priorA = array.new<Lvl>()
+var array<Lvl> priorL = array.new<Lvl>()
+var array<Lvl> priorN = array.new<Lvl>()
+// clusters (parallel arrays) + BRT state per cluster
+// state: 0 live · 1 escaped up · 2 escaped down · 3 done/dead
+var array<float>  clP  = array.new<float>()
+var array<float>  clR  = array.new<float>()
+var array<int>    clS  = array.new<int>()
+var array<string> clN  = array.new<string>()
+var array<int>    clSt = array.new<int>()
+var array<int>    clEB = array.new<int>()
+var bool needCl = false
+// anchors for profile histogram + dev lines
+var int dT0 = na
+var int wT0 = na
+var int aT0 = na
+var int lT0 = na
+var int nT0 = na
+// overnight + RTH-day extremes
+var float onHi = na
+var float onLo = na
+var float rHi = na
+var float rLo = na
+// VWAP
+var float sPV = 0.0
+var float sV = 0.0
+var float sP2 = 0.0
+// IB
+var float ibHi = na
+var float ibLo = na
+var bool ibDone = false
+var int accUp = 0
+var int accDn = 0
+var int firedUp = 0
+var int firedDn = 0
+// discipline
+var int sigCnt = 0
+var int lastSigBar = -99999
+var array<float> appFired = array.new<float>()
+// developing levels (confirmed-close values — anti-repaint)
+var float devSPoc = na
+var float devSVah = na
+var float devSVal = na
+var float devDPoc = na
+var float devDVah = na
+var float devDVal = na
+// plan drawings + live-plan state
+var line planE = na
+var line planS = na
+var line planT = na
+var label planLb = na
+var label planRes = na
+var int planDir = 0
+var float planSp = na
+var float planTp = na
+var bool planOn = false
+
+[ltfC, ltfV] = request.security_lower_tf(syminfo.tickerid, ltfStr, [close, volume])
+
+// ── PER-BAR TRACKING (live) ────────────────────────────────────────────────
+if timeframe.change("D")
+    dT0 := time
+if timeframe.change("W")
+    wT0 := time
+if inA and not inA[1]
+    aT0 := time
+if inL and not inL[1]
+    lT0 := time
+if inRTH and not inRTH[1]
+    nT0 := time
+
+if inON and not inON[1]
+    onHi := high
+    onLo := low
+if inON
+    onHi := math.max(nz(onHi, high), high)
+    onLo := math.min(nz(onLo, low), low)
+
+if newRTH
+    rHi := high
+    rLo := low
+    sigCnt := 0
+    sPV := 0.0
+    sV := 0.0
+    sP2 := 0.0
+    // wipe yesterday's trade-plan drawings at the open
+    if not na(planE)
+        line.delete(planE)
+        planE := line(na)
+    if not na(planS)
+        line.delete(planS)
+        planS := line(na)
+    if not na(planT)
+        line.delete(planT)
+        planT := line(na)
+    if not na(planLb)
+        label.delete(planLb)
+        planLb := label(na)
+    if not na(planRes)
+        label.delete(planRes)
+        planRes := label(na)
+    planOn := false
+    planDir := 0
+    appFired.clear()
+if inRTH
+    rHi := math.max(nz(rHi, high), high)
+    rLo := math.min(nz(rLo, low), low)
+    sPV += hlc3 * nz(volume)
+    sV += nz(volume)
+    sP2 += hlc3 * hlc3 * nz(volume)
+float vwapV = inRTH and sV > 0 ? sPV / sV : na
+float sd = inRTH and sV > 0 ? math.sqrt(math.max(sP2 / sV - vwapV * vwapV, 0.0)) : na
+float up1 = vwapV + sd
+float dn1 = vwapV - sd
+float up2 = vwapV + 2 * sd
+float dn2 = vwapV - 2 * sd
+
+if inIBw and not inIBw[1]
+    ibHi := high
+    ibLo := low
+    ibDone := false
+    accUp := 0
+    accDn := 0
+    firedUp := 0
+    firedDn := 0
+if inIBw
+    ibHi := math.max(nz(ibHi, high), high)
+    ibLo := math.min(nz(ibLo, low), low)
+if not inIBw and inIBw[1] and not na(ibHi)
+    ibDone := true
+
+// ── ROLLS + ACCUMULATION (confirmed bars only — no repaint) ────────────────
+if barstate.isconfirmed
+    if timeframe.change("D")
+        priorD := f_levels(dP, "pd", 2)
+        dP := f_newProf()
+        needCl := true
+    if timeframe.change("W")
+        priorW := f_levels(wP, "pw", 3)
+        wP := f_newProf()
+        needCl := true
+    if not inA and inA[1]
+        priorA := f_levels(aP, "AS ", 1)
+        needCl := true
+    if inA and not inA[1]
+        aP := f_newProf()
+    if not inL and inL[1]
+        priorL := f_levels(lP, "LDN ", 1)
+        needCl := true
+    if inL and not inL[1]
+        lP := f_newProf()
+    if not inRTH and inRTH[1]
+        priorN := f_levels(nP, "NY ", 1)
+        needCl := true
+    if newRTH
+        nP := f_newProf()
+    int nL = array.size(ltfC)
+    if nL > 0
+        for i = 0 to nL - 1
+            float pc = array.get(ltfC, i)
+            float vv = array.get(ltfV, i)
+            if not na(pc)
+                f_add(dP, pc, vv)
+                f_add(wP, pc, vv)
+                if inA
+                    f_add(aP, pc, vv)
+                if inL
+                    f_add(lP, pc, vv)
+                if inRTH
+                    f_add(nP, pc, vv)
+    else
+        f_add(dP, hl2, volume)
+        f_add(wP, hl2, volume)
+        if inA
+            f_add(aP, hl2, volume)
+        if inL
+            f_add(lP, hl2, volume)
+        if inRTH
+            f_add(nP, hl2, volume)
+    f_stretch(dP, high, low)
+    f_stretch(wP, high, low)
+    if inA
+        f_stretch(aP, high, low)
+    if inL
+        f_stretch(lP, high, low)
+    if inRTH
+        f_stretch(nP, high, low)
+    if needCl
+        f_clusters(priorW, priorD, priorA, priorL, priorN, not htfMode, clustW, clP, clR, clS, clN, clSt, clEB)
+        needCl := false
+    // ── developing levels — the LIVE read, refreshed every confirmed close ──
+    if inRTH
+        [p1, v1, w1] = f_devPVV(nP)
+        devSPoc := p1
+        devSVah := v1
+        devSVal := w1
+    else if inL
+        [p2, v2, w2] = f_devPVV(lP)
+        devSPoc := p2
+        devSVah := v2
+        devSVal := w2
+    else if inA
+        [p3, v3, w3] = f_devPVV(aP)
+        devSPoc := p3
+        devSVah := v3
+        devSVal := w3
+    else
+        devSPoc := na
+        devSVah := na
+        devSVal := na
+    [pd1, vd1, wd1] = f_devPVV(dP)
+    devDPoc := pd1
+    devDVah := vd1
+    devDVal := wd1
+
+// ── SIGNAL ENGINE (execution mode · confirmed close only) ──────────────────
+bool sigIBUp = false
+bool sigIBDn = false
+bool sigMRUp = false
+bool sigMRDn = false
+bool sigBRTUp = false
+bool sigBRTDn = false
+int fireDir = 0
+string fireTag = ""
+string fireLvl = ""
+
+if barstate.isconfirmed and not htfMode
+    if inRTH and ibDone and not na(ibHi)
+        accUp := close > ibHi ? accUp + 1 : 0
+        accDn := close < ibLo ? accDn + 1 : 0
+    bool gate = (not inRthOnly or inRTH) and (not useLunch or not inLunch) and (not inHardCap or sigCnt < inMaxSig) and bar_index - lastSigBar >= inCd
+    // IB — the set play (priority)
+    if enIB and gate and ibDone and accUp == inAcc and firedUp < inMaxBrk
+        sigIBUp := true
+        fireDir := 1
+        fireTag := "IB ▲"
+        fireLvl := "IBH " + str.tostring(ibHi, format.mintick)
+        firedUp += 1
+    else if enIB and gate and ibDone and accDn == inAcc and firedDn < inMaxBrk
+        sigIBDn := true
+        fireDir := -1
+        fireTag := "IB ▼"
+        fireLvl := "IBL " + str.tostring(ibLo, format.mintick)
+        firedDn += 1
+    // MR — reaction at ranked level
+    if enMR and gate and fireDir == 0
+        array<float> mp = array.new<float>()
+        array<float> mrk = array.new<float>()
+        array<string> mnm = array.new<string>()
+        if clP.size() > 0
+            for i = 0 to clP.size() - 1
+                if clR.get(i) >= inMinRank
+                    mp.push(clP.get(i))
+                    mrk.push(clR.get(i))
+                    mnm.push(clN.get(i))
+        if inclVwap and not na(vwapV) and 10 >= inMinRank
+            mp.push(vwapV)
+            mrk.push(10)
+            mnm.push("VWAP")
+        if inclSd2 and not na(up2) and 6 >= inMinRank
+            mp.push(up2)
+            mrk.push(6)
+            mnm.push("+2σ")
+            mp.push(dn2)
+            mrk.push(6)
+            mnm.push("-2σ")
+        if inclDay and not na(rHi[1]) and 8 >= inMinRank
+            mp.push(rHi[1])
+            mrk.push(8)
+            mnm.push("dayH")
+            mp.push(rLo[1])
+            mrk.push(8)
+            mnm.push("dayL")
+        if inclON and not na(onHi) and 6 >= inMinRank
+            mp.push(onHi)
+            mrk.push(6)
+            mnm.push("ONH")
+            mp.push(onLo)
+            mrk.push(6)
+            mnm.push("ONL")
+        if ibDone and not na(ibHi) and 4 >= inMinRank
+            mp.push(ibHi)
+            mrk.push(4)
+            mnm.push("IBH")
+            mp.push(ibLo)
+            mrk.push(4)
+            mnm.push("IBL")
+        // developing levels — the current session finally fires signals.
+        // [1] = last CONFIRMED snapshot: test the level where the chart DREW it
+        // at touch time, not where this bar's own volume just moved it.
+        if inclDevMR
+            float tSPoc = devSPoc[1]
+            float tSVah = devSVah[1]
+            float tSVal = devSVal[1]
+            float tDPoc = devDPoc[1]
+            float tDVah = devDVah[1]
+            float tDVal = devDVal[1]
+            if not na(tSPoc) and 6 >= inMinRank
+                mp.push(tSPoc)
+                mrk.push(6)
+                mnm.push("sPOC")
+            if not na(tSVah) and 4 >= inMinRank
+                mp.push(tSVah)
+                mrk.push(4)
+                mnm.push("sVAH")
+            if not na(tSVal) and 4 >= inMinRank
+                mp.push(tSVal)
+                mrk.push(4)
+                mnm.push("sVAL")
+            if not na(tDPoc) and 8 >= inMinRank
+                mp.push(tDPoc)
+                mrk.push(8)
+                mnm.push("dPOC")
+            if not na(tDVah) and 6 >= inMinRank
+                mp.push(tDVah)
+                mrk.push(6)
+                mnm.push("dVAH")
+            if not na(tDVal) and 6 >= inMinRank
+                mp.push(tDVal)
+                mrk.push(6)
+                mnm.push("dVAL")
+        float bR = 0.0
+        int bD = 0
+        float bP = na
+        string bN = ""
+        if mp.size() > 0
+            for i = 0 to mp.size() - 1
+                int d = f_mrTest(mp.get(i))
+                if d != 0 and mrk.get(i) > bR
+                    bR := mrk.get(i)
+                    bD := d
+                    bP := mp.get(i)
+                    bN := mnm.get(i)
+        bool volOK = not useVolMR or na(volume) or relVol >= volKMR
+        if bD != 0 and volOK
+            fireDir := bD
+            fireTag := bD == 1 ? "MR ▲" : "MR ▼"
+            fireLvl := f_scoreTxt(bR) + " " + bN + " @ " + str.tostring(bP, format.mintick)
+            sigMRUp := bD == 1
+            sigMRDn := bD == -1
+    // APP — toward play: ride INTO a powerful level inside the approach window
+    if enAPP and gate and fireDir == 0
+        array<float> ap = array.new<float>()
+        array<float> ark = array.new<float>()
+        array<string> anm = array.new<string>()
+        if clP.size() > 0
+            for i = 0 to clP.size() - 1
+                if clR.get(i) >= inAppRank
+                    ap.push(clP.get(i))
+                    ark.push(clR.get(i))
+                    anm.push(clN.get(i))
+        if inAppDyn
+            if not na(vwapV) and 10 >= inAppRank
+                ap.push(vwapV)
+                ark.push(10)
+                anm.push("VWAP")
+            if not na(rHi[1]) and 8 >= inAppRank
+                ap.push(rHi[1])
+                ark.push(8)
+                anm.push("dayH")
+                ap.push(rLo[1])
+                ark.push(8)
+                anm.push("dayL")
+            float tDPoc2 = devDPoc[1]
+            if not na(tDPoc2) and 8 >= inAppRank
+                ap.push(tDPoc2)
+                ark.push(8)
+                anm.push("dPOC")
+            if not na(up2) and 6 >= inAppRank
+                ap.push(up2)
+                ark.push(6)
+                anm.push("+2σ")
+                ap.push(dn2)
+                ark.push(6)
+                anm.push("-2σ")
+            if not na(onHi) and 6 >= inAppRank
+                ap.push(onHi)
+                ark.push(6)
+                anm.push("ONH")
+                ap.push(onLo)
+                ark.push(6)
+                anm.push("ONL")
+        float aBestR = 0.0
+        float aBestD = 1.0e18
+        float aLvl = na
+        string aNm = ""
+        int aDir = 0
+        if ap.size() > 0
+            for i = 0 to ap.size() - 1
+                float lvl = ap.get(i)
+                float dToL = math.abs(lvl - close)
+                if dToL >= inAppNear * tgtPts and dToL <= inAppFar * tgtPts
+                    int dirT = lvl > close ? 1 : -1
+                    bool withMove = dirT == 1 ? close > cPrev and cPos >= inAppPos : close < cPrev and cPos <= 1 - inAppPos
+                    bool untouched = dirT == 1 ? appHiN < lvl - mrTol : appLoN > lvl + mrTol
+                    bool freshLvl = true
+                    if appFired.size() > 0
+                        for j = 0 to appFired.size() - 1
+                            if math.abs(lvl - appFired.get(j)) <= mrTol
+                                freshLvl := false
+                    bool better = ark.get(i) > aBestR or (ark.get(i) == aBestR and dToL < aBestD)
+                    if withMove and untouched and freshLvl and better
+                        aBestR := ark.get(i)
+                        aBestD := dToL
+                        aLvl := lvl
+                        aNm := anm.get(i)
+                        aDir := dirT
+        if aDir != 0
+            fireDir := aDir
+            fireTag := aDir == 1 ? "APP ▲" : "APP ▼"
+            fireLvl := f_scoreTxt(aBestR) + " " + aNm + " → " + str.tostring(aLvl, format.mintick)
+            appFired.push(aLvl)
+            label.new(time, aDir == 1 ? low : high, "APP", xloc = xloc.bar_time, style = aDir == 1 ? label.style_label_up : label.style_label_down, color = color.new(aDir == 1 ? colUp : colDn, 30), textcolor = aDir == 1 ? color.black : color.white, size = size.tiny)
+    // BRT — punched cluster, retest holds → continuation
+    if enBRT and clP.size() > 0
+        for i = 0 to clP.size() - 1
+            if clR.get(i) >= inMinRank
+                int st = clSt.get(i)
+                float p = clP.get(i)
+                if st == 0
+                    if close > p + brtEsc and cPrev <= p + brtEsc
+                        clSt.set(i, 1)
+                        clEB.set(i, bar_index)
+                    else if close < p - brtEsc and cPrev >= p - brtEsc
+                        clSt.set(i, 2)
+                        clEB.set(i, bar_index)
+                else if st == 1
+                    if close < p
+                        clSt.set(i, 0)
+                    else if bar_index - clEB.get(i) > inBrtWatch
+                        clSt.set(i, 3)
+                    else if low <= p + mrTol and close > p and gate and fireDir == 0
+                        clSt.set(i, 3)
+                        sigBRTUp := true
+                        fireDir := 1
+                        fireTag := "BRT ▲"
+                        fireLvl := f_scoreTxt(clR.get(i)) + " " + clN.get(i) + " @ " + str.tostring(p, format.mintick)
+                else if st == 2
+                    if close > p
+                        clSt.set(i, 0)
+                    else if bar_index - clEB.get(i) > inBrtWatch
+                        clSt.set(i, 3)
+                    else if high >= p - mrTol and close < p and gate and fireDir == 0
+                        clSt.set(i, 3)
+                        sigBRTDn := true
+                        fireDir := -1
+                        fireTag := "BRT ▼"
+                        fireLvl := f_scoreTxt(clR.get(i)) + " " + clN.get(i) + " @ " + str.tostring(p, format.mintick)
+    // fire: count, alert, trade plan
+    if fireDir != 0
+        sigCnt += 1
+        lastSigBar := bar_index
+        float pe = close
+        float ps = pe - fireDir * stopPts
+        float pt = pe + fireDir * tgtPts
+        alert("SKULD " + syminfo.ticker + " " + timeframe.period + " — " + fireTag + " · " + fireLvl + " · E " + str.tostring(pe, format.mintick) + " · S " + str.tostring(ps, format.mintick) + " · T " + str.tostring(pt, format.mintick) + " (" + str.tostring(tgtT) + "t) · signal " + str.tostring(sigCnt) + "/" + str.tostring(inMaxSig), alert.freq_once_per_bar_close)
+        if showPlan
+            if not na(planE)
+                line.delete(planE)
+            if not na(planS)
+                line.delete(planS)
+            if not na(planT)
+                line.delete(planT)
+            if not na(planLb)
+                label.delete(planLb)
+            if not na(planRes)
+                label.delete(planRes)
+            planE := line.new(time, pe, time, pe, xloc = xloc.bar_time, color = colText, width = 2)
+            planS := line.new(time, ps, time, ps, xloc = xloc.bar_time, color = colDn, style = line.style_dashed)
+            planT := line.new(time, pt, time, pt, xloc = xloc.bar_time, color = colUp, style = line.style_dotted)
+            planLb := label.new(time, pe, fireTag + "  E " + str.tostring(pe, format.mintick) + "  S " + str.tostring(ps, format.mintick) + "  T " + str.tostring(pt, format.mintick), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(#000000, 20), textcolor = colText, size = size.small)
+            planDir := fireDir
+            planSp := ps
+            planTp := pt
+            planOn := true
+    // manage the live plan: extend with price, terminate + stamp outcome on hit
+    if planOn and fireDir == 0
+        line.set_x2(planE, time)
+        line.set_x2(planS, time)
+        line.set_x2(planT, time)
+        bool slHit = planDir > 0 ? low <= planSp : high >= planSp
+        bool tpHit = planDir > 0 ? high >= planTp : low <= planTp
+        if slHit or tpHit
+            planOn := false
+            if not na(planRes)
+                label.delete(planRes)
+            bool win = tpHit and not slHit
+            string resTxt = slHit and tpHit ? "TP+SL same bar — check" : win ? "TP ✓ +" + str.tostring(tgtT) + "t" : "SL ✗ -" + str.tostring(stopT) + "t"
+            planRes := label.new(time, win ? planTp : planSp, resTxt, xloc = xloc.bar_time, style = win ? label.style_label_up : label.style_label_down, color = color.new(win ? colUp : colDn, 20), textcolor = win ? color.black : color.white, size = size.small)
+        else if not inRTH
+            planOn := false
+
+// ── PLOTS ──────────────────────────────────────────────────────────────────
+plot(showVwap and not htfMode ? vwapV : na, "VWAP", color = colVwap, linewidth = 2, style = plot.style_linebr)
+plot(showVwap and not htfMode ? up1 : na, "+1σ", color = color.new(colBand, 40), style = plot.style_linebr)
+plot(showVwap and not htfMode ? dn1 : na, "-1σ", color = color.new(colBand, 40), style = plot.style_linebr)
+plot(showVwap and showSd2 and not htfMode ? up2 : na, "+2σ", color = color.new(colBand, 15), style = plot.style_linebr)
+plot(showVwap and showSd2 and not htfMode ? dn2 : na, "-2σ", color = color.new(colBand, 15), style = plot.style_linebr)
+plot(showOn and not htfMode and (inRTH or inON) ? onHi : na, "ONH", color = colOn, style = plot.style_linebr)
+plot(showOn and not htfMode and (inRTH or inON) ? onLo : na, "ONL", color = colOn, style = plot.style_linebr)
+plot(not htfMode and inRTH and not na(ibHi) ? ibHi : na, "IBH", color = color.new(colDn, 30), style = plot.style_linebr)
+plot(not htfMode and inRTH and not na(ibLo) ? ibLo : na, "IBL", color = color.new(colDn, 30), style = plot.style_linebr)
+
+plotshape(sigIBUp, "IB ▲", shape.triangleup, location.belowbar, color = colUp, text = "IB", textcolor = colUp, size = size.small)
+plotshape(sigIBDn, "IB ▼", shape.triangledown, location.abovebar, color = colDn, text = "IB", textcolor = colDn, size = size.small)
+plotshape(sigMRUp, "MR ▲", shape.triangleup, location.belowbar, color = colUp, text = "MR", textcolor = colUp, size = size.small)
+plotshape(sigMRDn, "MR ▼", shape.triangledown, location.abovebar, color = colDn, text = "MR", textcolor = colDn, size = size.small)
+plotshape(sigBRTUp, "BRT ▲", shape.diamond, location.belowbar, color = colUp, text = "BRT", textcolor = colUp, size = size.small)
+plotshape(sigBRTDn, "BRT ▼", shape.diamond, location.abovebar, color = colDn, text = "BRT", textcolor = colDn, size = size.small)
+
+// ── RENDER · DEVELOPING LEVELS (last bar) ──────────────────────────────────
+var array<line> devLn = array.new<line>()
+var array<label> devLb = array.new<label>()
+f_devDraw(float px, string nm, int rank, int t0, color cc, int wd) =>
+    if not na(px)
+        int x1 = na(t0) ? time - 30 * barMs : t0
+        devLn.push(line.new(x1, px, time + inOff * barMs, px, xloc = xloc.bar_time, color = cc, style = line.style_dotted, width = wd))
+        string txt = f_scoreTxt(rank) + " " + nm + (showPx ? "  " + str.tostring(px, format.mintick) : "") + " · " + str.tostring(math.abs(close - px), format.mintick)
+        devLb.push(label.new(time + inOff * barMs, px, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.black, 100), textcolor = cc, size = size.small))
+    true
+
+if barstate.islast
+    if devLn.size() > 0
+        for l in devLn
+            line.delete(l)
+    devLn.clear()
+    if devLb.size() > 0
+        for lb in devLb
+            label.delete(lb)
+    devLb.clear()
+    if not htfMode
+        int sessT0 = inRTH ? nT0 : inL ? lT0 : inA ? aT0 : na
+        if showDevS
+            f_devDraw(devSPoc, "sPOC", 6, sessT0, colVpPoc, 2)
+            f_devDraw(devSVah, "sVAH", 4, sessT0, colDevVa, 1)
+            f_devDraw(devSVal, "sVAL", 4, sessT0, colDevVa, 1)
+        if showDevD
+            f_devDraw(devDPoc, "dPOC", 8, dT0, colS4, 2)
+            f_devDraw(devDVah, "dVAH", 6, dT0, colS3, 1)
+            f_devDraw(devDVal, "dVAL", 6, dT0, colS3, 1)
+
+// ── RENDER · VOLUME PROFILE HISTOGRAM (last bar) ───────────────────────────
+var array<box> vpBx = array.new<box>()
+if barstate.islast
+    if vpBx.size() > 0
+        for b in vpBx
+            box.delete(b)
+    vpBx.clear()
+    if inVpStyle == "Bars"
+        Prof src = dP
+        int anch = dT0
+        if inVpSrc == "Week" or (inVpSrc == "Auto" and htfMode)
+            src := wP
+            anch := wT0
+        else if inVpSrc == "Session" or (inVpSrc == "Auto" and not htfMode)
+            if inRTH
+                src := nP
+                anch := nT0
+            else if inL
+                src := lP
+                anch := lT0
+            else if inA
+                src := aP
+                anch := aT0
+        [rv, lo, rowH, tot, pocI, uI, dI] = f_rows(src, inVpRows)
+        if tot > 0 and not na(rowH)
+            float mx = array.max(rv)
+            bool rightAnch = inVpAnchor == "Right edge"
+            int xR = time + (inOff - 1) * barMs
+            int xL = na(anch) ? time - inVpWide * barMs : anch
+            for i = 0 to inVpRows - 1
+                float v0 = rv.get(i)
+                if v0 > 0
+                    int wBars = math.max(1, int(math.round(v0 / mx * inVpWide)))
+                    bool inVa = i > dI and i < uI
+                    color cc = i == pocI ? colVpPoc : inVa ? colVpVa : colVpOut
+                    int bx1 = rightAnch ? xR - wBars * barMs : xL
+                    int bx2 = rightAnch ? xR : xL + wBars * barMs
+                    vpBx.push(box.new(bx1, lo + (i + 1) * rowH, bx2, lo + i * rowH, xloc = xloc.bar_time, bgcolor = color.new(cc, inVpTr), border_color = color.new(cc, 100)))
+
+// ── RENDER · CLUSTER MAP (last bar) ────────────────────────────────────────
+var array<line> clLn = array.new<line>()
+var array<label> clLb = array.new<label>()
+if barstate.islast
+    if clLn.size() > 0
+        for l in clLn
+            line.delete(l)
+    clLn.clear()
+    if clLb.size() > 0
+        for lb in clLb
+            label.delete(lb)
+    clLb.clear()
+    if showLvls and clP.size() > 0
+        array<float> dst = array.new<float>()
+        for i = 0 to clP.size() - 1
+            dst.push(math.abs(close - clP.get(i)))
+        array<int> ord = array.sort_indices(dst)
+        int shown = 0
+        for r = 0 to ord.size() - 1
+            int i = ord.get(r)
+            float d = dst.get(i)
+            if (inHide == 0 or d <= inHide) and shown < inMaxL
+                shown += 1
+                int stx = f_stars(clR.get(i))
+                color cc = f_starCol(stx)
+                int wd = clS.get(i) == 3 ? inWidW : clS.get(i) == 2 ? inWidD : inWidS
+                float y = clP.get(i)
+                clLn.push(line.new(math.max(bar_index - 30, 0), y, bar_index + inOff, y, color = cc, style = prSty, width = wd))
+                string txt = f_scoreTxt(clR.get(i)) + " " + clN.get(i) + (showPx ? "  " + str.tostring(y, format.mintick) : "") + " · " + str.tostring(d, format.mintick)
+                clLb.push(label.new(bar_index + inOff, y, txt, style = label.style_label_left, color = color.new(color.black, 100), textcolor = cc, size = size.small))
+
+// ── DASHBOARD ──────────────────────────────────────────────────────────────
+var table dash = showDash ? table.new(position.top_right, 2, 8, bgcolor = color.new(#000000, 10), border_width = 1, border_color = color.new(#787b86, 70)) : table(na)
+if showDash and barstate.islast
+    color offC = color.new(#787b86, 60)
+    color grnC = color.new(#26a69a, 15)
+    color redC = color.new(#ef5350, 25)
+    color bluC = color.new(#2962ff, 15)
+    f_row(dash, 0, "MODE", htfMode ? "STRUCTURE ≥" + inModeTf : "EXECUTION <" + inModeTf, htfMode ? bluC : grnC)
+    f_row(dash, 1, "TUNE", (isES ? "ES" : "NQ") + " T " + str.tostring(tgtT) + "t · S " + str.tostring(stopT) + "t · W " + str.tostring(clustW, format.mintick), offC)
+    string sessN = inRTH ? "NY" : inL ? "LDN" : inA ? "ASIA" : "OFF"
+    f_row(dash, 2, "SESSION", sessN, inRTH ? grnC : offC)
+    string ibTxt = htfMode ? "—" : ibDone and not na(ibHi) ? str.tostring(ibHi - ibLo, format.mintick) + (firedUp > 0 ? " ▲" : firedDn > 0 ? " ▼" : "") : inIBw ? "forming" : "waiting"
+    f_row(dash, 3, "IB", ibTxt, ibDone ? grnC : inIBw ? color.new(#ffb300, 15) : offC)
+    // nearest = clusters AND developing levels — the live map in one row
+    string nearTxt = "building"
+    float bd = 1.0e18
+    string bn = ""
+    int br = 0
+    if clP.size() > 0
+        for i = 0 to clP.size() - 1
+            float d = math.abs(close - clP.get(i))
+            if d < bd
+                bd := d
+                bn := clN.get(i)
+                br := int(clR.get(i))
+    if not na(devSPoc) and math.abs(close - devSPoc) < bd
+        bd := math.abs(close - devSPoc)
+        bn := "sPOC"
+        br := 6
+    if not na(devSVah) and math.abs(close - devSVah) < bd
+        bd := math.abs(close - devSVah)
+        bn := "sVAH"
+        br := 4
+    if not na(devSVal) and math.abs(close - devSVal) < bd
+        bd := math.abs(close - devSVal)
+        bn := "sVAL"
+        br := 4
+    if not na(devDPoc) and math.abs(close - devDPoc) < bd
+        bd := math.abs(close - devDPoc)
+        bn := "dPOC"
+        br := 8
+    if not na(devDVah) and math.abs(close - devDVah) < bd
+        bd := math.abs(close - devDVah)
+        bn := "dVAH"
+        br := 6
+    if not na(devDVal) and math.abs(close - devDVal) < bd
+        bd := math.abs(close - devDVal)
+        bn := "dVAL"
+        br := 6
+    if bn != ""
+        nearTxt := f_scoreTxt(br) + " " + bn + " · " + str.tostring(bd, format.mintick)
+    f_row(dash, 4, "NEAREST", nearTxt, offC)
+    string sPocTxt = na(devSPoc) ? "building" : str.tostring(devSPoc, format.mintick) + " · " + str.tostring(math.abs(close - devSPoc), format.mintick)
+    f_row(dash, 5, "sPOC", sPocTxt, na(devSPoc) ? offC : close > devSPoc ? grnC : redC)
+    f_row(dash, 6, "SIGNALS", str.tostring(sigCnt) + "/" + str.tostring(inMaxSig) + (sigCnt >= inMaxSig ? (inHardCap ? " DONE" : " ≥PLAN") : ""), sigCnt >= inMaxSig ? redC : grnC)
+    string fTxt = htfMode ? "map only" : useLunch and inLunch ? "LUNCH" : not inRTH ? "OFF-SESSION" : "CLEAR"
+    f_row(dash, 7, "FILTER", fTxt, fTxt == "CLEAR" ? grnC : fTxt == "map only" ? bluC : redC)
