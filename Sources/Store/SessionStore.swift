@@ -5,6 +5,9 @@ import SwiftUI
 /// screenshots are legal; multiple pending shots queue until picked.
 struct EntryDraft {
     var screenshot: URL?
+    /// Auto-detected from the screenshot filename; user can override in the
+    /// composer. nil = session default.
+    var instrument: Instrument?
     var comment: String = ""
     var lookingFor: String = ""
     var wantToSee: String = ""
@@ -24,6 +27,7 @@ struct TradeForm {
     var entryPrice: Double?
     var stopPrice: Double?
     var targetPrice: Double?
+    var instrument: Instrument?      // nil = entry's, then session's
 }
 
 struct LevelDraft: Identifiable {
@@ -44,6 +48,9 @@ final class SessionStore: ObservableObject {
     @Published private(set) var entries: [EntryRecord] = []
     @Published private(set) var trades: [TradeRecord] = []
     @Published private(set) var chops: [ChopRecord] = []
+    /// entryId -> thread, oldest first.
+    @Published private(set) var comments: [String: [CommentRecord]] = [:]
+    @Published private(set) var settings: UserSettings = UserSettings()
     @Published private(set) var pendingScreenshots: [URL] = []
     @Published private(set) var stats: SessionStats = .empty
     /// Entry ids with a mentor call in flight ("thinking..." on the card).
@@ -91,7 +98,8 @@ final class SessionStore: ObservableObject {
 
     func bootstrap() {
         Workspace.migrateLegacyDefaultsIfNeeded()
-        plan = TradingPlan.load(from: Workspace.planURL)
+        settings = UserSettings.load()
+        plan = TradingPlan.load(from: Workspace.planURL).applying(settings)
         Workspace.ensureDayFolders(todayDate)
 
         do {
@@ -293,7 +301,8 @@ final class SessionStore: ObservableObject {
             playType: draft.playType?.rawValue,
             levelId: draft.levelId,
             mentorReply: nil,
-            mentorClaudeSessionId: nil)
+            mentorClaudeSessionId: nil,
+            instrument: (draft.instrument ?? Instrument(rawValue: s.instrument))?.rawValue)
 
         do {
             try db.save(entry)
@@ -309,6 +318,11 @@ final class SessionStore: ObservableObject {
             }
             reloadAll()
             requestMentor(for: entry)
+            // Every chart post refreshes the level table — OCR is ~2s and
+            // local, so the map tracks the chart all day, bridge or no bridge.
+            if !relPath.isEmpty {
+                syncLevelsFromChart(manual: false)
+            }
         } catch {
             errorMessage = "Failed to save entry: \(error.localizedDescription)"
         }
@@ -380,24 +394,142 @@ final class SessionStore: ObservableObject {
         requestMentor(for: entry)
     }
 
+    // MARK: - Comment threads (user <-> mentor, per post)
+
+    func addUserComment(entryId: String, text: String) {
+        guard let db, let s = session,
+              let entry = entries.first(where: { $0.id == entryId }) else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let userComment = CommentRecord(
+            id: UUID().uuidString,
+            entryId: entryId,
+            ts: Workspace.isoNow(),
+            author: "user",
+            text: trimmed)
+        do {
+            try db.save(userComment)
+            reloadComments()
+        } catch {
+            errorMessage = "Failed to save comment: \(error.localizedDescription)"
+            return
+        }
+
+        guard let mentor, mentorAvailable, !mentorBusy.contains(entryId) else { return }
+        mentorBusy.insert(entryId)
+        let thread = comments[entryId] ?? []
+        let level = levels.first { $0.id == entry.levelId }
+        let resumeId = (try? db.latestMentorSessionId(sessionId: s.id)) ?? nil
+        let planSnapshot = plan
+        let statsSnapshot = stats
+
+        Task { [weak self] in
+            let outcome = await mentor.threadReply(
+                entry: entry,
+                thread: thread,
+                newComment: trimmed,
+                session: s,
+                level: level,
+                plan: planSnapshot,
+                stats: statsSnapshot,
+                resumeSessionId: resumeId)
+            await MainActor.run {
+                guard let self else { return }
+                self.mentorBusy.remove(entryId)
+                if case .success(let result) = outcome {
+                    let reply = CommentRecord(
+                        id: UUID().uuidString,
+                        entryId: entryId,
+                        ts: Workspace.isoNow(),
+                        author: "mentor",
+                        text: result.reply)
+                    try? self.db?.save(reply)
+                    if let sid = result.claudeSessionId {
+                        try? self.db?.updateEntryMentor(
+                            id: entryId,
+                            reply: entry.mentorReply,
+                            claudeSessionId: sid)
+                    }
+                    self.reloadComments()
+                    self.reloadEntries()
+                }
+            }
+        }
+    }
+
+    // MARK: - Post CRUD
+
+    /// Deletes a post plus its thread, trade, and screenshot file.
+    func deleteEntry(entryId: String) {
+        guard let db, var s = session,
+              let entry = entries.first(where: { $0.id == entryId }) else { return }
+        let hadTrades = trades.filter { $0.entryId == entryId }.count
+        do {
+            try db.deleteEntry(id: entryId)
+            if !entry.screenshotPath.isEmpty {
+                try? FileManager.default.removeItem(
+                    at: Workspace.absoluteURL(relative: entry.screenshotPath))
+            }
+            if hadTrades > 0 {
+                s.tradesTaken = max(0, s.tradesTaken - hadTrades)
+                try db.save(s)
+                session = s
+            }
+            reloadAll()
+        } catch {
+            errorMessage = "Failed to delete post: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteTrade(tradeId: String) {
+        guard let db, var s = session else { return }
+        do {
+            try db.deleteTrade(id: tradeId)
+            s.tradesTaken = max(0, s.tradesTaken - 1)
+            try db.save(s)
+            session = s
+            reloadAll()
+        } catch {
+            errorMessage = "Failed to delete trade: \(error.localizedDescription)"
+        }
+    }
+
+    /// Saves edited post fields (caption, tags, level, instrument).
+    func updateEntry(_ entry: EntryRecord) {
+        guard let db else { return }
+        do {
+            try db.save(entry)
+            reloadAll()
+        } catch {
+            errorMessage = "Failed to update post: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Settings
+
+    func saveSettings(_ newSettings: UserSettings) {
+        settings = newSettings
+        newSettings.save()
+        plan = TradingPlan.load(from: Workspace.planURL).applying(newSettings)
+        reloadAll()
+    }
+
     // MARK: - Trades
 
     var tradesRemaining: Int {
         max(0, plan.maxTradesPerDay - (session?.tradesTaken ?? 0))
     }
 
-    /// Discipline check for the confirm-override flow. nil = clear to trade.
+    /// Quality check for the confirm-override flow. nil = clear to trade.
+    /// Trade COUNT is deliberately not checked — pace is context, not a cap
+    /// (all-day trading, 2026-07-22). Level strength still matters.
     func tradeWarning(for form: TradeForm) -> String? {
-        var warnings: [String] = []
-        if let s = session, s.tradesTaken >= plan.maxTradesPerDay {
-            warnings.append("Trade \(s.tradesTaken + 1) of a max \(plan.maxTradesPerDay). Plan says DONE.")
-        }
         if let levelId = form.levelId,
            let level = levels.first(where: { $0.id == levelId }),
            level.effectiveRank < plan.minRankToTrade {
-            warnings.append("Level \(level.name) rank \(level.effectiveRank) < min \(plan.minRankToTrade).")
+            return "Level \(level.name) rank \(level.effectiveRank) < min \(plan.minRankToTrade)."
         }
-        return warnings.isEmpty ? nil : warnings.joined(separator: "\n")
+        return nil
     }
 
     func recordTrade(entryId: String, form: TradeForm) {
@@ -414,7 +546,10 @@ final class SessionStore: ObservableObject {
             exitPrice: nil,
             ticksResult: nil,
             usdResult: nil,
-            result: "open")
+            result: "open",
+            instrument: (form.instrument
+                ?? entries.first(where: { $0.id == entryId }).flatMap { Instrument(rawValue: $0.instrument ?? "") }
+                ?? Instrument(rawValue: s.instrument))?.rawValue)
         do {
             try db.save(trade)
             s.tradesTaken += 1
@@ -433,7 +568,9 @@ final class SessionStore: ObservableObject {
             errorMessage = "Trade has no entry price — set it before closing."
             return
         }
-        let instrument = Instrument(rawValue: s.instrument) ?? .NQ
+        // Per-trade instrument first — session default is only a fallback.
+        let instrument = Instrument(rawValue: trade.instrument ?? "")
+            ?? Instrument(rawValue: s.instrument) ?? .NQ
         // Direction from the bracket: target above entry = long; else stop below = long.
         let direction: Double
         if let target = trade.targetPrice {
@@ -493,57 +630,98 @@ final class SessionStore: ObservableObject {
 
     // MARK: - Chart level sync (tv CLI / CDP)
 
-    /// Pulls the ★ cluster labels off the live chart and merges them into the
-    /// session's levels: same name -> price/stars refresh (broken flag, rank,
-    /// notes preserved); new name -> inserted. Manual levels never deleted.
+    /// Merges levels read from the chart (bridge or screenshot) into the
+    /// session: same name -> price/stars/rank refresh (broken flag, notes
+    /// preserved); new name -> inserted. Manual levels never deleted.
+    private func mergeChartLevels(_ chartLevels: [ChartLevel], source: String) throws {
+        guard let db, let s = session else { return }
+        var byName: [String: LevelRecord] = [:]
+        for level in levels { byName[level.name.lowercased()] = level }
+        for chart in chartLevels {
+            if var existing = byName[chart.name.lowercased()] {
+                if existing.price != chart.price || existing.stars != chart.stars
+                    || existing.rankScore != (chart.rank ?? existing.rankScore) {
+                    existing.price = chart.price
+                    existing.stars = chart.stars
+                    if let rank = chart.rank { existing.rankScore = rank }
+                    try db.save(existing)
+                }
+            } else {
+                try db.save(LevelRecord(
+                    id: UUID().uuidString,
+                    sessionId: s.id,
+                    name: chart.name,
+                    price: chart.price,
+                    stars: chart.stars,
+                    rankScore: chart.rank,
+                    broken: false,
+                    notes: source))
+            }
+        }
+        lastLevelSync = Date()
+        reloadAll()
+    }
+
+    /// Level acquisition, two rungs: tv CLI off the live chart (fast, needs
+    /// the CDP bridge), else claude reads the labels straight off the latest
+    /// posted SCREENSHOT — levels work even with the bridge down.
     func syncLevelsFromChart(manual: Bool) {
-        guard let db, let s = session, !levelSyncBusy else { return }
+        guard let s = session, !levelSyncBusy else { return }
         levelSyncBusy = true
+        // Recent posted screenshots, newest first — footprint-only shots can
+        // hide the labels, so OCR walks back until one reads clean.
+        let fallbackShots = Array(entries.filter { !$0.screenshotPath.isEmpty }
+            .prefix(3).map(\.screenshotPath))
+        let fallbackShot = fallbackShots.first
         Task { [weak self] in
-            let result = await self?.levelSync.fetchLevels()
+            guard let self else { return }
+            // Fast probe picks the path: bridge up -> tv CLI; down -> straight
+            // to OCR (no 20s timeout prelude on every post).
+            var outcome: Result<[ChartLevel], LevelSyncError>
+            var source: String
+            func ocrWalk() async -> Result<[ChartLevel], LevelSyncError> {
+                var last: Result<[ChartLevel], LevelSyncError> =
+                    .failure(.failed("No TV bridge and no posted screenshot yet — post a chart shot, then sync."))
+                for shot in fallbackShots {
+                    last = await self.levelSync.extractLevels(fromScreenshot: shot, repoRoot: Workspace.root)
+                    if case .success = last { return last }
+                }
+                return last
+            }
+            if await LevelSyncService.cdpAlive() {
+                outcome = await self.levelSync.fetchLevels()
+                source = "chart-sync"
+                if case .failure = outcome, fallbackShot != nil {
+                    outcome = await ocrWalk()
+                    source = "screenshot-sync"
+                }
+            } else {
+                outcome = await ocrWalk()
+                source = "screenshot-sync"
+            }
+            let finalOutcome = outcome
+            let finalSource = source
             await MainActor.run {
-                guard let self else { return }
                 self.levelSyncBusy = false
-                switch result {
+                switch finalOutcome {
                 case .success(let chartLevels):
                     do {
-                        var byName: [String: LevelRecord] = [:]
-                        for level in self.levels { byName[level.name.lowercased()] = level }
-                        for chart in chartLevels {
-                            if var existing = byName[chart.name.lowercased()] {
-                                if existing.price != chart.price || existing.stars != chart.stars
-                                    || existing.rankScore != (chart.rank ?? existing.rankScore) {
-                                    existing.price = chart.price
-                                    existing.stars = chart.stars
-                                    if let rank = chart.rank { existing.rankScore = rank }
-                                    try db.save(existing)
-                                }
-                            } else {
-                                try db.save(LevelRecord(
-                                    id: UUID().uuidString,
-                                    sessionId: s.id,
-                                    name: chart.name,
-                                    price: chart.price,
-                                    stars: chart.stars,
-                                    rankScore: chart.rank,
-                                    broken: false,
-                                    notes: "chart-sync"))
-                            }
-                        }
-                        self.lastLevelSync = Date()
-                        self.tvConnected = true
-                        self.reloadAll()
+                        try self.mergeChartLevels(chartLevels, source: finalSource)
+                        if finalSource == "chart-sync" { self.tvConnected = true }
                     } catch {
                         if manual { self.errorMessage = "Level sync save failed: \(error.localizedDescription)" }
                     }
                 case .failure(let err):
-                    if manual { self.errorMessage = err.localizedDescription }
+                    if manual {
+                        self.errorMessage = fallbackShot == nil
+                            ? "No TV bridge and no posted screenshot yet — post a chart shot, then sync."
+                            : err.localizedDescription
+                    }
                     Task { await self.refreshTVStatus() }
-                case .none:
-                    break
                 }
             }
         }
+        _ = s
     }
 
     /// Pre-session variant for SetupView — chart levels as editable drafts.
@@ -578,6 +756,7 @@ final class SessionStore: ObservableObject {
                 entries: entries,
                 trades: trades,
                 chops: chops,
+                comments: comments,
                 stats: stats,
                 plan: plan)
             lastReportURL = url
@@ -619,15 +798,21 @@ final class SessionStore: ObservableObject {
         entries = (try? db.entries(sessionId: s.id)) ?? []
     }
 
+    private func reloadComments() {
+        guard let db, let s = session else { return }
+        comments = (try? db.comments(sessionId: s.id)) ?? [:]
+    }
+
     private func reloadAll() {
         guard let db, let s = session else {
-            levels = []; entries = []; trades = []; chops = []; stats = .empty
+            levels = []; entries = []; trades = []; chops = []; comments = [:]; stats = .empty
             return
         }
         levels = (try? db.levels(sessionId: s.id)) ?? []
         entries = (try? db.entries(sessionId: s.id)) ?? []
         trades = (try? db.trades(sessionId: s.id)) ?? []
         chops = (try? db.chops(sessionId: s.id)) ?? []
+        comments = (try? db.comments(sessionId: s.id)) ?? [:]
         stats = (try? StatsQueries.compute(db: db, session: s, levels: levels, plan: plan)) ?? .empty
     }
 

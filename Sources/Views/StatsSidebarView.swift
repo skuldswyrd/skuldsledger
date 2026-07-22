@@ -9,7 +9,7 @@ struct StatsSidebarView: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 12) {
-                DisciplineCard(stats: store.stats)
+                PaceCard(stats: store.stats)
                 PnlCard(stats: store.stats)
                 StarTableCard(rows: store.stats.starRows)
                 PlayTableCard(rows: store.stats.playRows)
@@ -24,28 +24,27 @@ struct StatsSidebarView: View {
     }
 }
 
-// MARK: - Discipline (TRADES X/N + light)
+// MARK: - Pace (TRADES n + baseline caption)
 
-private struct DisciplineCard: View {
+/// Pace is CONTEXT, not a cap (all-day trading, 2026-07-22): the dot stays
+/// green at any count — over-baseline is fine. The sidebar's only red state
+/// is the max-loss breach in the P&L card.
+private struct PaceCard: View {
     let stats: SessionStats
 
-    /// green while >1 trade remains, amber on the last trade, red at/over max.
-    private var light: Color {
-        if stats.tradesTaken >= stats.maxTrades { return Theme.red }
-        if stats.tradesTaken == stats.maxTrades - 1 { return Theme.amber }
-        return Theme.green
-    }
-
     var body: some View {
-        SidebarCard(title: "DISCIPLINE") {
+        SidebarCard(title: "PACE") {
             HStack(spacing: 10) {
                 Circle()
-                    .fill(light)
+                    .fill(Theme.green)
                     .frame(width: 12, height: 12)
-                Text("TRADES \(stats.tradesTaken)/\(stats.maxTrades)")
+                Text("TRADES \(stats.tradesTaken)")
                     .font(.system(.title3, design: .monospaced).weight(.bold))
                     .foregroundStyle(Theme.text)
             }
+            Text("pace \(stats.maxTrades)/day")
+                .font(Theme.monoSmall)
+                .foregroundStyle(Theme.textDim)
             if stats.openTrades > 0 {
                 HStack(spacing: 6) {
                     Circle().fill(Theme.blue).frame(width: 6, height: 6)
@@ -80,16 +79,46 @@ private struct PnlCard: View {
             }
             .font(Theme.monoSmall.weight(.semibold))
 
+            // Per-instrument split — only worth a row when he actually
+            // traded more than one product today (NQ + ES days).
+            if stats.instrumentRows.count > 1 {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(stats.instrumentRows) { row in
+                        HStack(spacing: 6) {
+                            Text(row.instrument)
+                                .font(Theme.monoSmall.weight(.semibold))
+                                .foregroundStyle(Theme.text)
+                            Spacer(minLength: 8)
+                            Text(SidebarFmt.signedUsd(row.netUsd))
+                                .font(Theme.monoSmall)
+                                .foregroundStyle(SidebarFmt.pnlColor(row.netUsd))
+                            Text("· \(SidebarFmt.ticksShort(row.netTicks))")
+                                .font(Theme.monoSmall)
+                                .foregroundStyle(Theme.textDim)
+                        }
+                    }
+                }
+            }
+
             SidebarRow(
                 label: "DAILY TARGET",
                 value: stats.dailyTargetUsd.map { SidebarFmt.usd($0) } ?? "—",
                 valueColor: Theme.text)
 
             if let maxLoss = stats.dailyMaxLossUsd {
-                SidebarRow(
-                    label: "DAILY MAX LOSS",
-                    value: SidebarFmt.usd(maxLoss),
-                    valueColor: Theme.text)
+                let breached = stats.netUsd <= -abs(maxLoss)
+                HStack {
+                    Text("DAILY MAX LOSS")
+                        .font(Theme.monoSmall)
+                        .foregroundStyle(Theme.textDim)
+                    Spacer(minLength: 8)
+                    if breached {
+                        Circle().fill(Theme.red).frame(width: 6, height: 6)
+                    }
+                    Text("-$" + String(format: "%.2f", abs(maxLoss)))
+                        .font(Theme.monoSmall.weight(breached ? .bold : .regular))
+                        .foregroundStyle(breached ? Theme.red : Theme.textDim)
+                }
             } else {
                 HStack(alignment: .top) {
                     Text("DAILY MAX LOSS")
@@ -347,6 +376,13 @@ private enum SidebarFmt {
 
     static func usd(_ v: Double) -> String {
         (v < 0 ? "-$" : "$") + String(format: "%.2f", abs(v))
+    }
+
+    /// Compact tick count for the per-instrument rows ("84t", "-12t",
+    /// "6.5t") — minus only when negative, no forced decimals.
+    static func ticksShort(_ v: Double) -> String {
+        let whole = v.truncatingRemainder(dividingBy: 1) == 0
+        return String(format: whole ? "%.0ft" : "%.1ft", v)
     }
 
     static func price(_ v: Double) -> String {

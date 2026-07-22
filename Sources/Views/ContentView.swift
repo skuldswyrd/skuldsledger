@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var confirmEndSession = false
     @State private var showUpgradeLog = false
     @State private var confirmUpdate = false
+    @State private var showSettings = false
 
     var body: some View {
         content
@@ -22,7 +23,18 @@ struct ContentView: View {
             .sheet(isPresented: $showUpgradeLog) {
                 UpgradeLogView()
             }
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+            }
             .toolbar {
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    .help("Pace baseline, daily target, max loss, default instrument")
+                }
                 ToolbarItem(placement: .automatic) {
                     Button {
                         showUpgradeLog = true
@@ -82,14 +94,17 @@ struct ContentView: View {
     @ViewBuilder
     private var sessionShell: some View {
         VStack(spacing: 0) {
+            // Lunch = informational only (he trades all sessions, all day):
+            // a dim one-liner, never amber, never a block.
             if store.isLunchBlackout {
-                SessionBanner(
-                    text: "LUNCH \(Self.hhmm(store.plan.lunchStartMin))–\(Self.hhmm(store.plan.lunchEndMin)) ET — no new signals per plan",
-                    color: Theme.amber)
+                LunchBanner(
+                    text: "lunch \(Self.hhmm(store.plan.lunchStartMin))–\(Self.hhmm(store.plan.lunchEndMin)) ET — thinner liquidity")
             }
-            if store.tradesRemaining == 0 {
+            // The only red state up here: daily max loss breached (when the
+            // user defined one). Display only — nothing auto-flattens.
+            if let maxLoss = store.plan.dailyMaxLossUsd, store.stats.netUsd <= -maxLoss {
                 SessionBanner(
-                    text: "\(store.stats.tradesTaken)/\(store.stats.maxTrades) DONE — plan says stop",
+                    text: "MAX LOSS HIT — \(Self.usd(-store.stats.netUsd)) down. Plan says flat.",
                     color: Theme.red)
             }
             HStack(spacing: 0) {
@@ -175,9 +190,13 @@ struct ContentView: View {
     private static func hhmm(_ minutes: Int) -> String {
         String(format: "%02d:%02d", minutes / 60, minutes % 60)
     }
+
+    private static func usd(_ value: Double) -> String {
+        String(format: "$%.0f", max(0, value))
+    }
 }
 
-// MARK: - Banner strip (amber lunch / red done)
+// MARK: - Banner strips (red max-loss / dim lunch)
 
 private struct SessionBanner: View {
     let text: String
@@ -200,6 +219,31 @@ private struct SessionBanner: View {
             Rectangle()
                 .frame(height: 1)
                 .foregroundStyle(color.opacity(0.35))
+        }
+    }
+}
+
+/// Dim, tiny, neutral — lunch is context, not a warning.
+private struct LunchBanner: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Theme.textDim.opacity(0.6))
+                .frame(width: 5, height: 5)
+            Text(text)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Theme.textDim)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(Theme.card)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .frame(height: 1)
+                .foregroundStyle(Theme.cardBorder)
         }
     }
 }

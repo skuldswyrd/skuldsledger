@@ -21,8 +21,19 @@ struct SessionStats: Equatable {
         var winRate: Double? { (wins + losses) > 0 ? Double(wins) / Double(wins + losses) : nil }
     }
 
+    struct InstrumentRow: Equatable, Identifiable {
+        var instrument: String
+        var trades: Int
+        var netTicks: Double
+        var netUsd: Double
+        var id: String { instrument }
+    }
+
     var tradesTaken: Int = 0
+    /// Pace BASELINE (trades/day) — display context, never a cap (2026-07-22).
     var maxTrades: Int = 3
+    /// P&L split by instrument — he trades NQ and ES in the same day now.
+    var instrumentRows: [InstrumentRow] = []
 
     var netTicks: Double = 0
     var netUsd: Double = 0

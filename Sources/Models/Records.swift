@@ -64,6 +64,9 @@ struct EntryRecord: Codable, Identifiable, Equatable, FetchableRecord, Persistab
     var levelId: String?
     var mentorReply: String?
     var mentorClaudeSessionId: String?
+    /// Per-post instrument (he switches NQ/ES mid-day) — auto-detected from
+    /// the TradingView screenshot filename, falls back to the session's.
+    var instrument: String?
 }
 
 struct TradeRecord: Codable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
@@ -83,6 +86,23 @@ struct TradeRecord: Codable, Identifiable, Equatable, FetchableRecord, Persistab
     var ticksResult: Double?
     var usdResult: Double?
     var result: String?              // win/loss/scratch/open
+    /// Instrument this trade was priced in — tick math uses THIS, never the
+    /// session default (day-1 lesson: MNQ session, NQ fills, 10x under-report).
+    var instrument: String?
+}
+
+/// One reply in a post's thread — user and mentor go back and forth like
+/// comments under an X post.
+struct CommentRecord: Codable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "comments"
+    static let databaseColumnDecodingStrategy = DatabaseColumnDecodingStrategy.convertFromSnakeCase
+    static let databaseColumnEncodingStrategy = DatabaseColumnEncodingStrategy.convertToSnakeCase
+
+    var id: String
+    var entryId: String
+    var ts: String                   // ISO8601
+    var author: String               // "user" | "mentor"
+    var text: String
 }
 
 struct ChopRecord: Codable, Identifiable, Equatable, FetchableRecord, PersistableRecord {

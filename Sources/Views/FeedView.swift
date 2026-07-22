@@ -245,6 +245,10 @@ struct ComposerView: View {
     @State private var action: EntryAction = .wait
     @State private var playType: PlayType?
     @State private var levelId: String?
+    /// nil = session default. Auto-detected from the screenshot filename;
+    /// a manual pick from the menu sticks until cleared.
+    @State private var instrument: Instrument?
+    @State private var instrumentManuallySet = false
     @State private var showMore = false
     @State private var chopHighText = ""
     @State private var chopLowText = ""
@@ -278,6 +282,7 @@ struct ComposerView: View {
 
                 playMenu
                 levelMenu
+                instrumentMenu
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.12)) { showMore.toggle() }
@@ -310,7 +315,7 @@ struct ComposerView: View {
         .onAppear { autoAttach(store.pendingScreenshots) }
         .onChange(of: store.pendingScreenshots) { _, shots in
             if let sel = selectedShot, !shots.contains(sel) {
-                selectedShot = nil
+                attach(nil)
             }
             autoAttach(shots)
         }
@@ -318,7 +323,16 @@ struct ComposerView: View {
 
     /// Newest inbox screenshot lands attached, ready to caption.
     private func autoAttach(_ shots: [URL]) {
-        if selectedShot == nil { selectedShot = shots.last }
+        if selectedShot == nil, let last = shots.last { attach(last) }
+    }
+
+    /// Single attach path — instrument auto-detects from the TradingView
+    /// filename ("MNQ1!_2026-07-22_….png") unless the user picked one.
+    private func attach(_ url: URL?) {
+        selectedShot = url
+        if !instrumentManuallySet {
+            instrument = url.flatMap { Instrument.detect(fromFilename: $0.lastPathComponent) }
+        }
     }
 
     // MARK: attached image
@@ -335,7 +349,7 @@ struct ComposerView: View {
 
                 Button {
                     store.discardPendingScreenshot(shot)
-                    selectedShot = nil
+                    attach(nil)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 16))
@@ -368,7 +382,7 @@ struct ComposerView: View {
                             .frame(width: 72, height: 42)
                             .clipShape(RoundedRectangle(cornerRadius: 5))
                             .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.cardBorder, lineWidth: 1))
-                            .onTapGesture { selectedShot = url }
+                            .onTapGesture { attach(url) }
                             .help("Use this screenshot")
                     }
                 }
@@ -410,6 +424,30 @@ struct ComposerView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+    }
+
+    /// Cyan when auto-detected off the screenshot filename, dim "inst" when
+    /// riding the session default.
+    private var instrumentMenu: some View {
+        Menu {
+            Button("session default") {
+                instrument = nil
+                instrumentManuallySet = false
+            }
+            ForEach(Instrument.allCases) { inst in
+                Button(inst.rawValue) {
+                    instrument = inst
+                    instrumentManuallySet = true
+                }
+            }
+        } label: {
+            Text(instrument?.rawValue ?? "inst")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(instrument == nil ? Theme.textDim : Theme.cyan)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Per-post instrument — auto-detected from the screenshot")
     }
 
     // MARK: optional extras
@@ -454,6 +492,7 @@ struct ComposerView: View {
         guard canSubmit else { return }
         var draft = EntryDraft()
         draft.screenshot = selectedShot
+        draft.instrument = instrument
         draft.comment = comment
         draft.lookingFor = lookingFor
         draft.wantToSee = wantToSee
@@ -471,6 +510,8 @@ struct ComposerView: View {
 
     private func clear() {
         selectedShot = nil
+        instrument = nil
+        instrumentManuallySet = false
         comment = ""
         lookingFor = ""
         wantToSee = ""
@@ -496,6 +537,11 @@ struct EntryCardView: View {
 
     @State private var showTradeSheet = false
     @State private var exitPriceText = ""
+    @State private var showEditSheet = false
+    @State private var showDeletePostConfirm = false
+    @State private var showDeleteTradeConfirm = false
+    @State private var showEarlierComments = false
+    @State private var replyText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -530,6 +576,27 @@ struct EntryCardView: View {
         .sheet(isPresented: $showTradeSheet) {
             TradeLogSheet(entry: entry)
         }
+        .sheet(isPresented: $showEditSheet) {
+            EditPostSheet(entry: entry)
+        }
+        .confirmationDialog("Delete this post?", isPresented: $showDeletePostConfirm) {
+            Button("Delete post", role: .destructive) {
+                store.deleteEntry(entryId: entry.id)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes the post, its thread, any trade, and the screenshot.")
+        }
+        .confirmationDialog("Delete this trade?", isPresented: $showDeleteTradeConfirm) {
+            Button("Delete trade", role: .destructive) {
+                if let trade = store.trade(forEntry: entry.id) {
+                    store.deleteTrade(tradeId: trade.id)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes the trade — the post stays.")
+        }
     }
 
     // MARK: header
@@ -545,6 +612,11 @@ struct EntryCardView: View {
             if let level = store.level(id: entry.levelId) {
                 LevelChip(level: level)
             }
+            // Instrument tag only when the post left the session default.
+            if let inst = entry.instrument, !inst.isEmpty,
+               inst != store.session?.instrument {
+                TagChip(text: inst, color: Theme.cyan)
+            }
 
             Spacer()
 
@@ -553,7 +625,33 @@ struct EntryCardView: View {
                     .font(Theme.monoSmall)
                     .foregroundStyle(Theme.textDim)
             }
+
+            cardMenu
         }
+    }
+
+    private var cardMenu: some View {
+        Menu {
+            Button("Edit post") { showEditSheet = true }
+            if (entry.mentorReply ?? "").isEmpty, store.mentorAvailable {
+                Button("Retry mentor") { store.retryMentor(entryId: entry.id) }
+            }
+            Divider()
+            if store.trade(forEntry: entry.id) != nil {
+                Button("Delete trade", role: .destructive) { showDeleteTradeConfirm = true }
+            }
+            Button("Delete post", role: .destructive) { showDeletePostConfirm = true }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.textDim)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Post actions")
     }
 
     // MARK: secondary fields
@@ -580,29 +678,40 @@ struct EntryCardView: View {
         }
     }
 
-    // MARK: mentor (threaded reply)
+    // MARK: mentor (threaded reply + comment thread)
 
     @ViewBuilder
     private var mentorBlock: some View {
-        if store.mentorBusy.contains(entry.id) {
+        let thread = store.comments[entry.id] ?? []
+        let busy = store.mentorBusy.contains(entry.id)
+        let reply = entry.mentorReply ?? ""
+
+        if !reply.isEmpty || !thread.isEmpty || busy {
             mentorThread {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("mentor thinking…")
-                        .font(Theme.monoSmall)
-                        .foregroundStyle(Theme.textDim)
-                }
-            }
-        } else if let reply = entry.mentorReply, !reply.isEmpty {
-            mentorThread {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("MENTOR")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Theme.purple)
-                    Text(reply)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.textDim)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 8) {
+                    if !reply.isEmpty {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("MENTOR")
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Theme.purple)
+                            Text(reply)
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    commentRows(thread)
+                    if busy {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("mentor thinking…")
+                                .font(Theme.monoSmall)
+                                .foregroundStyle(Theme.textDim)
+                        }
+                    }
+                    if !reply.isEmpty || !thread.isEmpty {
+                        replyComposer(busy: busy)
+                    }
                 }
             }
         } else if store.mentorAvailable {
@@ -615,6 +724,73 @@ struct EntryCardView: View {
                 .font(Theme.monoSmall)
                 .foregroundStyle(Theme.textDim)
         }
+    }
+
+    /// Thread rows, collapsed to the last 2 once it grows past 3.
+    @ViewBuilder
+    private func commentRows(_ thread: [CommentRecord]) -> some View {
+        if thread.count > 3 {
+            Button {
+                withAnimation(.easeInOut(duration: 0.12)) { showEarlierComments.toggle() }
+            } label: {
+                Text(showEarlierComments ? "hide earlier" : "show \(thread.count - 2) earlier")
+                    .font(Theme.monoSmall)
+                    .foregroundStyle(Theme.blue)
+            }
+            .buttonStyle(.plain)
+        }
+        ForEach(visibleComments(thread)) { c in
+            commentRow(c)
+        }
+    }
+
+    private func visibleComments(_ thread: [CommentRecord]) -> [CommentRecord] {
+        (thread.count > 3 && !showEarlierComments) ? Array(thread.suffix(2)) : thread
+    }
+
+    private func commentRow(_ c: CommentRecord) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            TagChip(
+                text: c.author == "mentor" ? "MENTOR" : "YOU",
+                color: c.author == "mentor" ? Theme.purple : Theme.textDim)
+            Text(c.text)
+                .font(.system(size: 12))
+                .foregroundStyle(c.author == "mentor" ? Theme.textDim : Theme.text)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func replyComposer(busy: Bool) -> some View {
+        HStack(spacing: 8) {
+            TextField("Reply to mentor…", text: $replyText, axis: .vertical)
+                .lineLimit(1...3)
+                .darkField()
+                .onSubmit { sendReply() }
+            Button {
+                sendReply()
+            } label: {
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(canSendReply ? Theme.purple : Theme.textDim)
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(Theme.inset))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSendReply || busy)
+            .opacity(busy ? 0.4 : 1)
+            .help("Reply — mentor answers in the thread")
+        }
+    }
+
+    private var canSendReply: Bool {
+        !replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func sendReply() {
+        let text = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !store.mentorBusy.contains(entry.id) else { return }
+        store.addUserComment(entryId: entry.id, text: text)
+        replyText = ""
     }
 
     /// Reply-style indent: purple thread bar on the left.
@@ -887,5 +1063,151 @@ struct TradeLogSheet: View {
     private func record() {
         store.recordTrade(entryId: entry.id, form: form)
         dismiss()
+    }
+}
+
+// MARK: - EditPostSheet
+
+/// Post editor — caption, secondary fields, tags, level, instrument.
+/// Screenshot and thread stay as posted.
+struct EditPostSheet: View {
+    @EnvironmentObject private var store: SessionStore
+    @Environment(\.dismiss) private var dismiss
+    let entry: EntryRecord
+
+    @State private var comment = ""
+    @State private var lookingFor = ""
+    @State private var wantToSee = ""
+    @State private var action: EntryAction = .wait
+    @State private var playType: PlayType?
+    @State private var levelId: String?
+    @State private var instrument: Instrument?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("EDIT POST")
+                .font(Theme.mono)
+                .foregroundStyle(Theme.text)
+
+            TextField("What are you seeing?", text: $comment, axis: .vertical)
+                .lineLimit(1...5)
+                .darkField()
+            TextField("Looking for", text: $lookingFor, axis: .vertical)
+                .lineLimit(1...3)
+                .darkField()
+            TextField("Want to see for a trade", text: $wantToSee, axis: .vertical)
+                .lineLimit(1...3)
+                .darkField()
+
+            HStack(spacing: 6) {
+                ForEach(EntryAction.allCases) { a in
+                    SelectChip(
+                        text: a.rawValue.uppercased(),
+                        color: actionColor(a.rawValue),
+                        selected: action == a
+                    ) { action = a }
+                }
+            }
+
+            HStack(spacing: 16) {
+                playMenu
+                levelMenu
+                instrumentMenu
+                Spacer()
+            }
+
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(PillButtonStyle(color: Theme.textDim))
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save") { save() }
+                    .buttonStyle(PillButtonStyle(color: Theme.green, filled: true))
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 420)
+        .background(Theme.bg)
+        .onAppear { load() }
+    }
+
+    // MARK: menus
+
+    private var playMenu: some View {
+        Menu {
+            Button("no play") { playType = nil }
+            ForEach(PlayType.allCases) { p in
+                Button(p.rawValue) { playType = p }
+            }
+        } label: {
+            Text(playType?.rawValue ?? "play")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(playType == nil ? Theme.textDim : Theme.teal)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var levelMenu: some View {
+        Menu {
+            Button("no level") { levelId = nil }
+            ForEach(store.levels) { level in
+                Button("\(level.name) \(Theme.starText(level.stars)) @ \(trimmedNumber(level.price))") {
+                    levelId = level.id
+                }
+            }
+        } label: {
+            Text(store.level(id: levelId).map { "\($0.name) \(Theme.starText($0.stars))" } ?? "level")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(levelId == nil ? Theme.textDim : Theme.amber)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var instrumentMenu: some View {
+        Menu {
+            Button("session default") { instrument = nil }
+            ForEach(Instrument.allCases) { inst in
+                Button(inst.rawValue) { instrument = inst }
+            }
+        } label: {
+            Text(instrument?.rawValue ?? "inst")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(instrument == nil ? Theme.textDim : Theme.cyan)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    // MARK: load / save
+
+    private func load() {
+        comment = entry.comment ?? ""
+        lookingFor = entry.lookingFor ?? ""
+        wantToSee = entry.wantToSee ?? ""
+        action = EntryAction(rawValue: entry.action ?? "") ?? .wait
+        playType = PlayType(rawValue: entry.playType ?? "")
+        levelId = entry.levelId
+        instrument = Instrument(rawValue: entry.instrument ?? "")
+    }
+
+    private func save() {
+        var updated = entry
+        updated.comment = nilIfEmpty(comment)
+        updated.lookingFor = nilIfEmpty(lookingFor)
+        updated.wantToSee = nilIfEmpty(wantToSee)
+        updated.action = action.rawValue
+        updated.playType = playType?.rawValue
+        updated.levelId = levelId
+        updated.instrument = instrument?.rawValue
+        store.updateEntry(updated)
+        dismiss()
+    }
+
+    private func nilIfEmpty(_ s: String) -> String? {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
     }
 }

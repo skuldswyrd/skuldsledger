@@ -14,9 +14,10 @@ enum StatsQueries {
 
         var stats = SessionStats()
 
-        // Discipline counters: session row is the source of truth for trades
-        // taken (bumped on recordTrade), plan for the cap.
-        stats.tradesTaken = session.tradesTaken
+        // Trade count truth = the rows themselves (deletes must subtract; the
+        // session counter can drift). maxTrades is the pace BASELINE now —
+        // display context only, never a cap (2026-07-22).
+        stats.tradesTaken = trades.count
         stats.maxTrades = plan.maxTradesPerDay
 
         // P&L over closed trades — open trades carry nil ticks/usd results,
@@ -69,6 +70,23 @@ enum StatsQueries {
         playRows.append(contentsOf: playBuckets.values.sorted { $0.play < $1.play })
         stats.playRows = playRows
 
+        // Per-instrument P&L: he switches NQ/ES mid-day now. Each trade groups
+        // by its own instrument, session's as fallback for pre-v2 rows.
+        // Non-nil results only (open trades carry nil ticks/usd).
+        var instrumentBuckets: [String: SessionStats.InstrumentRow] = [:]
+        for trade in trades {
+            let instrument = trade.instrument ?? session.instrument
+            var row = instrumentBuckets[instrument]
+                ?? SessionStats.InstrumentRow(instrument: instrument, trades: 0,
+                                              netTicks: 0, netUsd: 0)
+            row.trades += 1
+            if let ticks = trade.ticksResult { row.netTicks += ticks }
+            if let usd = trade.usdResult { row.netUsd += usd }
+            instrumentBuckets[instrument] = row
+        }
+        stats.instrumentRows = instrumentBuckets.values
+            .sorted { abs($0.netUsd) > abs($1.netUsd) }
+
         // Entry counts per action — feeds "signals offered vs taken".
         var actionCounts: [String: Int] = [:]
         for entry in entries {
@@ -81,18 +99,24 @@ enum StatsQueries {
         stats.levelsHeld = levels.filter { !$0.broken }.count
         stats.levelsBroken = levels.count - stats.levelsHeld
 
-        // Daily target reads off the milestone ladder at the RUNNING balance:
-        // starting capital + lifetime net USD across ALL sessions in the DB
-        // (SQLite SUM skips NULLs, so open trades don't distort it).
-        let lifetimeNetUsd = try db.dbQueue.read { dbc in
-            try Double.fetchOne(
-                dbc, sql: "SELECT COALESCE(SUM(usd_result), 0.0) FROM trades") ?? 0
+        // Daily target: a settings-layer override wins; otherwise read off the
+        // milestone ladder at the RUNNING balance — starting capital + lifetime
+        // net USD across ALL sessions in the DB (SQLite SUM skips NULLs, so
+        // open trades don't distort it).
+        if let override = plan.dailyTargetOverrideUsd {
+            stats.dailyTargetUsd = override
+        } else {
+            let lifetimeNetUsd = try db.dbQueue.read { dbc in
+                try Double.fetchOne(
+                    dbc, sql: "SELECT COALESCE(SUM(usd_result), 0.0) FROM trades") ?? 0
+            }
+            stats.dailyTargetUsd = plan
+                .milestone(forBalance: plan.startingCapital + lifetimeNetUsd)?
+                .dailyTargetUsd
         }
-        stats.dailyTargetUsd = plan
-            .milestone(forBalance: plan.startingCapital + lifetimeNetUsd)?
-            .dailyTargetUsd
 
-        // nil = UNDEFINED in the plan — surfaced by the UI, never enforced here.
+        // May be defined via user settings now (plan overlay); nil still means
+        // UNDEFINED — surfaced by the UI (banner + row), never enforced here.
         stats.dailyMaxLossUsd = plan.dailyMaxLossUsd
 
         return stats

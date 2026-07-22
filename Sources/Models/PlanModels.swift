@@ -21,6 +21,48 @@ enum Instrument: String, CaseIterable, Identifiable {
         case .ES, .MES: return "ES_MES"
         }
     }
+
+    /// TradingView saves grabs as "MNQ1!_2026-07-22_12-40-23_5a21c.png" —
+    /// symbol root leads the filename. Longest roots first (MNQ before NQ).
+    static func detect(fromFilename name: String) -> Instrument? {
+        let upper = name.uppercased()
+        for inst in [Instrument.MNQ, .MES, .NQ, .ES] where upper.hasPrefix(inst.rawValue) {
+            return inst
+        }
+        return nil
+    }
+}
+
+/// Per-user knobs, stored beside the data at Records/user_settings.json.
+/// Overlays the plan JSON (doctrine stays hand-edited; knobs live here).
+struct UserSettings: Codable, Equatable {
+    var paceBaselinePerDay: Int?     // trades/day pace — a baseline, NEVER a cap
+    var dailyTargetUsd: Double?      // overrides the milestone-derived target
+    var dailyMaxLossUsd: Double?     // defines the plan's UNDEFINED — display + banner only
+    var minRankToTrade: Int?
+    var defaultInstrument: String?
+
+    static var url: URL {
+        Workspace.recordsDir.appendingPathComponent("user_settings.json")
+    }
+
+    static func load() -> UserSettings {
+        guard let data = try? Data(contentsOf: url),
+              let s = try? JSONDecoder().decode(UserSettings.self, from: data) else {
+            return UserSettings()
+        }
+        return s
+    }
+
+    func save() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(self) {
+            try? FileManager.default.createDirectory(
+                at: Self.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: Self.url, options: .atomic)
+        }
+    }
 }
 
 /// Live-parsed view of skuld_trading_operation.json. Parsed leniently with
@@ -56,6 +98,18 @@ struct TradingPlan {
     var autoTune: [String: AutoTune] = [:]
     var milestones: [Milestone] = []
     var warnings: [String] = []
+    /// Settings-layer override for the daily target (else milestone-derived).
+    var dailyTargetOverrideUsd: Double?
+
+    /// User settings overlay the plan — pace/max-loss/min-rank knobs win.
+    func applying(_ s: UserSettings) -> TradingPlan {
+        var plan = self
+        if let pace = s.paceBaselinePerDay { plan.maxTradesPerDay = pace }
+        if let maxLoss = s.dailyMaxLossUsd { plan.dailyMaxLossUsd = maxLoss }
+        if let rank = s.minRankToTrade { plan.minRankToTrade = rank }
+        plan.dailyTargetOverrideUsd = s.dailyTargetUsd
+        return plan
+    }
 
     func tune(for instrument: Instrument) -> AutoTune {
         autoTune[instrument.autoTuneKey]

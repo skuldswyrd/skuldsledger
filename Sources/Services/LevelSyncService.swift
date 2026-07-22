@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import Vision
 
 /// A ranked cluster read off the live TradingView chart (Skuld Unified
 /// labels — v2 score format "[12] pdH+NY H  29192.50 · 3.50", v1 star
@@ -141,14 +143,130 @@ final class LevelSyncService {
         rank >= 10 ? 5 : rank >= 8 ? 4 : rank >= 6 ? 3 : rank >= 4 ? 2 : 1
     }
 
+    // MARK: - Screenshot fallback (no bridge needed)
+
+    /// Native Vision OCR over the posted screenshot — the chart prints its own
+    /// "[12] pdH+NY H  29192.50 · 3.50" labels, and OCR reads them in ~2s.
+    /// Fully local, no bridge, no subprocess.
+    func extractLevels(fromScreenshot relPath: String, repoRoot: URL) async -> Result<[ChartLevel], LevelSyncError> {
+        let url = relPath.hasPrefix("/")
+            ? URL(fileURLWithPath: relPath)
+            : repoRoot.appendingPathComponent(relPath)
+        let lines: [String]
+        switch Self.recognizeTextLines(imageURL: url) {
+        case .failure(let err): return .failure(err)
+        case .success(let recognized): lines = recognized
+        }
+
+        var levels: [ChartLevel] = []
+        for line in lines {
+            if let level = Self.parseOCRLevelLine(line) {
+                levels.append(level)
+            }
+        }
+        var seen = Set<String>()
+        levels = levels.filter { seen.insert($0.name.lowercased()).inserted }
+        return levels.isEmpty ? .failure(.noLevels) : .success(levels)
+    }
+
+    static func recognizeTextLines(imageURL: URL) -> Result<[String], LevelSyncError> {
+        guard let image = NSImage(contentsOf: imageURL),
+              var cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return .failure(.failed("could not load screenshot image"))
+        }
+        // Chart labels are small — a 2x upscale materially improves Vision's
+        // read of the bracket scores. Cap at ~6k px so memory stays sane.
+        if max(cg.width, cg.height) < 3000, let scaled = upscale2x(cg) {
+            cg = scaled
+        }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["en-US"]
+        request.customWords = [
+            "pdPOC", "pwPOC", "pdVAH", "pdVAL", "pwVAH", "pwVAL", "pdLVN", "pwLVN",
+            "pdHVN", "pwHVN", "pdH", "pdL", "pwH", "pwL", "VWAP", "sPOC", "sVAH",
+            "sVAL", "dPOC", "dVAH", "dVAL", "ONH", "ONL", "IBH", "IBL",
+            "NY POC", "NY VAH", "NY VAL", "AS POC", "AS VAH", "AS VAL",
+            "LDN POC", "LDN VAH", "LDN VAL", "NY H", "NY L", "AS H", "AS L",
+        ]
+        let handler = VNImageRequestHandler(cgImage: cg, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            return .failure(.failed("OCR failed: \(error.localizedDescription)"))
+        }
+        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        return .success(lines)
+    }
+
+    private static func upscale2x(_ cg: CGImage) -> CGImage? {
+        let w = cg.width * 2
+        let h = cg.height * 2
+        guard let ctx = CGContext(
+            data: nil, width: w, height: h,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return ctx.makeImage()
+    }
+
+    /// "[12] pdH+NY H  29192.50 · 3.50" -> ChartLevel, tolerant of real OCR
+    /// mangling seen in the field: leading line artifacts ("- [8] PWVAL…"),
+    /// brackets as parens/pipes ("(6)", "|2"), "·" read as "-", comma
+    /// thousands, split/garbled prices ("29245./5" is dropped, not guessed).
+    static func parseOCRLevelLine(_ raw: String) -> ChartLevel? {
+        var line = raw.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: ",", with: "")
+        // Level lines start after the drawn line's OCR artifacts.
+        while let f = line.first, "-—–|•·~_ ".contains(f) { line.removeFirst() }
+
+        var rank: Int?
+        var rest: String
+
+        if let m = line.range(of: #"^[\[\(](\d{1,2})[\]\)]"#, options: .regularExpression) {
+            rank = Int(line[m].dropFirst().dropLast())
+            rest = String(line[m.upperBound...])
+        } else if line.hasPrefix("★") {
+            let stars = line.prefix(while: { $0 == "★" }).count
+            rank = [1: 1, 2: 4, 3: 6, 4: 8, 5: 10][min(5, max(1, stars))]
+            rest = String(line.dropFirst(stars))
+        } else {
+            return nil
+        }
+        rest = rest.trimmingCharacters(in: .whitespaces)
+
+        // Price = first futures-price-shaped token (>=3 integer digits, two
+        // decimals). Distances like "48.75" (2 digits) never match — a line
+        // whose price got OCR-garbled is skipped, not guessed.
+        guard let pm = rest.range(of: #"\d{3,6}\.\d{2}"#, options: .regularExpression),
+              let price = Double(rest[pm]), price > 0 else {
+            return nil
+        }
+        let name = String(rest[..<pm.lowerBound])
+            .trimmingCharacters(in: CharacterSet(charactersIn: " -—–·•|:"))
+        guard name.count >= 2, name.count <= 30,
+              name.rangeOfCharacter(from: .letters) != nil else {
+            return nil
+        }
+        let upper = name.uppercased()
+        for banned in ["TP", "SL", "E", "S", "T", "SIGNAL", "SIGNALS", "TUNE", "MODE", "IB", "FILTER", "NEAREST", "SESSION", "SPOC"] where upper == banned {
+            return nil
+        }
+        return ChartLevel(name: name, price: price, stars: starBand(rank ?? 1), rank: rank)
+    }
+
     // MARK: - Process plumbing
 
-    private func runProcess(cli: URL, args: [String], timeout: TimeInterval) async -> Result<String, LevelSyncError> {
+    private func runProcess(cli: URL, args: [String], timeout: TimeInterval, cwd: URL? = nil) async -> Result<String, LevelSyncError> {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 process.executableURL = cli
                 process.arguments = args
+                if let cwd { process.currentDirectoryURL = cwd }
                 var env = ProcessInfo.processInfo.environment
                 let extras = ["/opt/homebrew/bin", "/usr/local/bin"]
                 let currentPath = env["PATH"] ?? ""

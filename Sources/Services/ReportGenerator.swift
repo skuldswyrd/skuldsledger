@@ -12,8 +12,8 @@ enum ReportGenerator {
 
     static func generate(root: URL, session: SessionRecord, levels: [LevelRecord],
                          entries: [EntryRecord], trades: [TradeRecord],
-                         chops: [ChopRecord], stats: SessionStats,
-                         plan: TradingPlan) throws -> URL {
+                         chops: [ChopRecord], comments: [String: [CommentRecord]],
+                         stats: SessionStats, plan: TradingPlan) throws -> URL {
         let reportsDir = root.appendingPathComponent("Reports", isDirectory: true)
         try FileManager.default.createDirectory(at: reportsDir, withIntermediateDirectories: true)
         let url = reportsDir.appendingPathComponent("\(session.date)_session_report.md")
@@ -22,14 +22,15 @@ enum ReportGenerator {
         let tradesByEntry = Dictionary(grouping: trades, by: { $0.entryId })
 
         var md: [String] = []
-        md += headerSection(session: session, plan: plan)
+        md += headerSection(session: session, stats: stats, plan: plan)
         md += statsSection(stats: stats)
         md += levelsSection(levels: levels)
         md += starSection(stats: stats)
         md += playSection(stats: stats)
         md += signalsSection(stats: stats)
         md += chopSection(chops: chops)
-        md += timelineSection(entries: entries, tradesByEntry: tradesByEntry, levelById: levelById)
+        md += timelineSection(entries: entries, tradesByEntry: tradesByEntry,
+                              levelById: levelById, comments: comments)
         md.append("---")
         md.append("")
         md.append("_Generated \(Workspace.isoNow()) by Skuld's Ledger._")
@@ -41,7 +42,8 @@ enum ReportGenerator {
 
     // MARK: - Sections
 
-    private static func headerSection(session: SessionRecord, plan: TradingPlan) -> [String] {
+    private static func headerSection(session: SessionRecord, stats: SessionStats,
+                                      plan: TradingPlan) -> [String] {
         let ib: String
         switch (session.ibLow, session.ibHigh) {
         case let (lo?, hi?): ib = "\(price(lo)) – \(price(hi))"
@@ -49,17 +51,25 @@ enum ReportGenerator {
         case let (nil, hi?): ib = "low not set / high \(price(hi))"
         default:             ib = "not set"
         }
-        return [
+        var lines = [
             "# Session Report — \(session.date)",
             "",
             "| | |",
             "|---|---|",
-            "| Instrument | \(cell(session.instrument)) |",
+            "| Base instrument | \(cell(session.instrument)) |"
+        ]
+        // Distinct instruments actually traded (he switches NQ/ES mid-day).
+        if !stats.instrumentRows.isEmpty {
+            let traded = stats.instrumentRows.map(\.instrument).joined(separator: ", ")
+            lines.append("| Instruments traded | \(cell(traded)) |")
+        }
+        lines += [
             "| IB range | \(ib) |",
             "| Status | \(cell(session.status.uppercased())) |",
-            "| Plan | v\(cell(plan.version)) · max \(plan.maxTradesPerDay) trades/day · min rank \(plan.minRankToTrade) |",
+            "| Plan | v\(cell(plan.version)) · pace baseline \(plan.maxTradesPerDay)/day · min rank \(plan.minRankToTrade) |",
             ""
         ]
+        return lines
     }
 
     private static func statsSection(stats: SessionStats) -> [String] {
@@ -71,7 +81,7 @@ enum ReportGenerator {
             "",
             "| Metric | Value |",
             "|---|---|",
-            "| Trades | \(stats.tradesTaken) / \(stats.maxTrades) |",
+            "| Trades | \(stats.tradesTaken) (pace baseline \(stats.maxTrades)/day) |",
             "| W / L / Scratch | \(stats.wins) / \(stats.losses) / \(stats.scratches) |"
         ]
         if stats.openTrades > 0 {
@@ -84,6 +94,20 @@ enum ReportGenerator {
             "| Daily max loss | \(maxLoss) |",
             ""
         ]
+        // P&L split by instrument — only worth a table when the day actually
+        // crossed products.
+        if stats.instrumentRows.count > 1 {
+            lines += [
+                "### By instrument",
+                "",
+                "| Instrument | Trades | Ticks | USD |",
+                "|---|---|---|---|"
+            ]
+            for row in stats.instrumentRows {
+                lines.append("| \(cell(row.instrument)) | \(row.trades) | \(ticks(row.netTicks)) | \(usd(row.netUsd)) |")
+            }
+            lines.append("")
+        }
         return lines
     }
 
@@ -179,7 +203,8 @@ enum ReportGenerator {
 
     private static func timelineSection(entries: [EntryRecord],
                                         tradesByEntry: [String: [TradeRecord]],
-                                        levelById: [String: LevelRecord]) -> [String] {
+                                        levelById: [String: LevelRecord],
+                                        comments: [String: [CommentRecord]]) -> [String] {
         var lines = ["## Timeline", ""]
         // Store hands entries newest-first; the report reads top-to-bottom
         // through the day, so re-sort oldest-first. ISO8601 UTC strings sort
@@ -236,6 +261,30 @@ enum ReportGenerator {
                     lines.append("> \(row)")
                 }
                 lines.append("")
+            }
+
+            // Thread under the post (user <-> mentor back-and-forth), oldest
+            // first — rendered as its own blockquote block after the review.
+            if let thread = comments[entry.id], !thread.isEmpty {
+                lines += threadLines(thread)
+                lines.append("")
+            }
+        }
+        return lines
+    }
+
+    /// One blockquote block for the whole thread; each comment starts with its
+    /// author tag, continuation lines keep the `> ` prefix so multi-line
+    /// replies stay inside the quote.
+    private static func threadLines(_ thread: [CommentRecord]) -> [String] {
+        var lines: [String] = []
+        for comment in thread.sorted(by: { $0.ts < $1.ts }) {
+            let author = comment.author == "user" ? "You" : "Mentor"
+            let rows = comment.text.split(separator: "\n", omittingEmptySubsequences: false)
+            guard let first = rows.first else { continue }
+            lines.append("> **\(author):** \(first)")
+            for row in rows.dropFirst() {
+                lines.append("> \(row)")
             }
         }
         return lines

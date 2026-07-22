@@ -66,12 +66,31 @@ final class MentorService {
     func review(entry: EntryRecord, session: SessionRecord, level: LevelRecord?,
                 plan: TradingPlan, stats: SessionStats,
                 resumeSessionId: String?) async -> Result<MentorResult, MentorError> {
+        let prompt = Self.buildReviewPrompt(
+            entry: entry, session: session, level: level, plan: plan, stats: stats)
+        return await run(prompt: prompt, resumeSessionId: resumeSessionId)
+    }
+
+    // MARK: - Thread reply (comment back-and-forth under a post)
+
+    /// Mentor's next turn in a post's comment thread. Same CLI plumbing as
+    /// `review` — only the prompt differs.
+    func threadReply(entry: EntryRecord, thread: [CommentRecord], newComment: String,
+                     session: SessionRecord, level: LevelRecord?,
+                     plan: TradingPlan, stats: SessionStats,
+                     resumeSessionId: String?) async -> Result<MentorResult, MentorError> {
+        let prompt = Self.buildThreadPrompt(
+            entry: entry, thread: thread, newComment: newComment,
+            session: session, level: level, plan: plan, stats: stats)
+        return await run(prompt: prompt, resumeSessionId: resumeSessionId)
+    }
+
+    // MARK: - Shared run (resume retry + parse)
+
+    private func run(prompt: String, resumeSessionId: String?) async -> Result<MentorResult, MentorError> {
         guard let cli = Self.locateCLI() else { return .failure(.cliNotFound) }
 
-        let prompt = Self.buildPrompt(
-            entry: entry, session: session, level: level, plan: plan, stats: stats)
         let baseArgs = ["-p", prompt, "--output-format", "json", "--allowedTools", "Read"]
-
         var args = baseArgs
         let resume = resumeSessionId?.trimmingCharacters(in: .whitespaces)
         if let resume, !resume.isEmpty {
@@ -104,33 +123,29 @@ final class MentorService {
         }
     }
 
-    // MARK: - Prompt
+    // MARK: - Prompts
 
-    private static func buildPrompt(entry: EntryRecord, session: SessionRecord,
-                                    level: LevelRecord?, plan: TradingPlan,
-                                    stats: SessionStats) -> String {
-        var lines: [String] = []
+    /// All-day philosophy (2026-07-22): he trades every session; pace and the
+    /// clock are context, quality is the grade. Injected into BOTH prompts so
+    /// the first read and every thread reply hold the same line.
+    private static func philosophyBlock(paceBaseline: Int) -> String {
+        "He trades all sessions, all day. Trade count (baseline \(paceBaseline)/day) and time of day are CONTEXT ONLY — NEVER criticize a trade for count, lunch, overnight, or session choice. Grade ONLY: setup quality (level score, orderflow/footprint context, market structure), direction logic vs the plays (IB/MR/BRT/APP), defined risk (entry/stop/target stated), exit discipline (fixed target; never hold through a destination level). Reserve sharp flags for: no level AND no structure basis, undefined risk, holding through target/level, revenge or euphoria language. Otherwise constructive, specific, short."
+    }
 
-        let shot = entry.screenshotPath.trimmingCharacters(in: .whitespaces)
-        if shot.isEmpty {
-            lines.append("You are skuld's live trading mentor. Read the plan at skuld_trading_operation.json using your Read tool.")
-        } else {
-            lines.append("You are skuld's live trading mentor. Read the plan at skuld_trading_operation.json and the screenshot at \(shot) using your Read tool.")
-        }
-        lines.append("")
-
-        var sessionLine = "Session: \(session.instrument) \(session.date)"
+    private static func sessionLine(session: SessionRecord, stats: SessionStats) -> String {
+        var line = "Session: \(session.instrument) \(session.date)"
         if let lo = session.ibLow, let hi = session.ibHigh {
-            sessionLine += ", IB \(fmt(lo))-\(fmt(hi))"
+            line += ", IB \(fmt(lo))-\(fmt(hi))"
         }
-        sessionLine += ". Trades taken: \(stats.tradesTaken)/\(stats.maxTrades)."
-        lines.append(sessionLine)
+        line += ". Trades taken: \(stats.tradesTaken) (pace baseline \(stats.maxTrades)/day)."
+        return line
+    }
 
-        // Stats were recomputed after this entry was saved, so the action
-        // counts sum IS the entry count (floor 1 covers the retry-later path).
-        let n = max(1, stats.actionCounts.values.reduce(0, +))
-        lines.append("Entry #\(n) at \(entry.ts):")
-
+    /// The four post fields + tag line, empties omitted. Shared verbatim by
+    /// the review prompt and the thread prompt's "original post" section.
+    private static func entryFieldLines(entry: EntryRecord, level: LevelRecord?,
+                                        plan: TradingPlan) -> [String] {
+        var lines: [String] = []
         if let text = nonEmpty(entry.comment) { lines.append("- What I see: \(text)") }
         if let text = nonEmpty(entry.lookingFor) { lines.append("- Looking for: \(text)") }
         if let text = nonEmpty(entry.wantToSee) { lines.append("- Want to see: \(text)") }
@@ -143,9 +158,86 @@ final class MentorService {
             tags.append("Level: \(level.name) \(stars) @ \(fmt(level.price)) (rank \(level.effectiveRank), min tradeable \(plan.minRankToTrade))")
         }
         if !tags.isEmpty { lines.append("- " + tags.joined(separator: "  ")) }
+        return lines
+    }
+
+    private static func buildReviewPrompt(entry: EntryRecord, session: SessionRecord,
+                                          level: LevelRecord?, plan: TradingPlan,
+                                          stats: SessionStats) -> String {
+        var lines: [String] = []
+
+        let shot = entry.screenshotPath.trimmingCharacters(in: .whitespaces)
+        if shot.isEmpty {
+            lines.append("You are skuld's live trading mentor. Read the plan at skuld_trading_operation.json using your Read tool.")
+        } else {
+            lines.append("You are skuld's live trading mentor. Read the plan at skuld_trading_operation.json and the screenshot at \(shot) using your Read tool.")
+        }
+        lines.append("")
+        lines.append(sessionLine(session: session, stats: stats))
+
+        // Stats were recomputed after this entry was saved, so the action
+        // counts sum IS the entry count (floor 1 covers the retry-later path).
+        let n = max(1, stats.actionCounts.values.reduce(0, +))
+        lines.append("Entry #\(n) at \(entry.ts):")
+        lines.append(contentsOf: entryFieldLines(entry: entry, level: level, plan: plan))
 
         lines.append("")
-        lines.append("Give a short mentor read (max ~120 words): does this match the plan's play definitions, is the level rank sane, and one discipline reminder if trades taken is at or near the max. Direct, no fluff. Never use the word \"fade\" — say \"reversal\" or frame by direction.")
+        lines.append(philosophyBlock(paceBaseline: stats.maxTrades))
+        lines.append("")
+        lines.append("Give a short mentor read (max ~120 words). Direct, no fluff. Never use the word \"fade\" — say \"reversal\" or frame by direction.")
+
+        return lines.joined(separator: "\n")
+    }
+
+    private static func buildThreadPrompt(entry: EntryRecord, thread: [CommentRecord],
+                                          newComment: String, session: SessionRecord,
+                                          level: LevelRecord?, plan: TradingPlan,
+                                          stats: SessionStats) -> String {
+        var lines: [String] = []
+
+        let shot = entry.screenshotPath.trimmingCharacters(in: .whitespaces)
+        if shot.isEmpty {
+            lines.append("You are skuld's live trading mentor, continuing the comment thread under one of his journal posts. Read the plan at skuld_trading_operation.json using your Read tool if you need it.")
+        } else {
+            lines.append("You are skuld's live trading mentor, continuing the comment thread under one of his journal posts. Read the plan at skuld_trading_operation.json and the post's screenshot at \(shot) using your Read tool if you need them.")
+        }
+        lines.append("")
+        lines.append(sessionLine(session: session, stats: stats))
+        lines.append("Original post at \(entry.ts):")
+        lines.append(contentsOf: entryFieldLines(entry: entry, level: level, plan: plan))
+
+        // Chronological exchange: the original mentor read leads, then the
+        // saved comments. The caller's thread already contains the just-saved
+        // new comment — drop that trailing duplicate since it's called out
+        // separately below.
+        var prior = thread
+        if let last = prior.last, last.author == "user",
+           last.text.trimmingCharacters(in: .whitespacesAndNewlines)
+               == newComment.trimmingCharacters(in: .whitespacesAndNewlines) {
+            prior.removeLast()
+        }
+        var exchange: [String] = []
+        if let read = nonEmpty(entry.mentorReply) {
+            exchange.append("You said: \(read)")
+        }
+        for comment in prior {
+            guard let text = nonEmpty(comment.text) else { continue }
+            exchange.append(comment.author == "mentor"
+                ? "You said: \(text)"
+                : "Trader replied: \(text)")
+        }
+        if !exchange.isEmpty {
+            lines.append("")
+            lines.append("Thread so far:")
+            lines.append(contentsOf: exchange)
+        }
+
+        lines.append("")
+        lines.append("Trader's new comment: \(newComment)")
+        lines.append("")
+        lines.append(philosophyBlock(paceBaseline: stats.maxTrades))
+        lines.append("")
+        lines.append("Continue the conversation as the mentor: answer his new comment directly (max ~100 words). Direct, specific, no fluff. Never use the word \"fade\" — say \"reversal\" or frame by direction.")
 
         return lines.joined(separator: "\n")
     }

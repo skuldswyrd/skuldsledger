@@ -94,6 +94,28 @@ final class AppDatabase {
                 """)
         }
 
+        migrator.registerMigration("v2") { db in
+            try db.execute(sql: """
+                CREATE TABLE comments (
+                  id TEXT PRIMARY KEY,
+                  entry_id TEXT NOT NULL REFERENCES entries(id),
+                  ts TEXT NOT NULL,
+                  author TEXT NOT NULL,
+                  text TEXT NOT NULL
+                );
+
+                CREATE INDEX idx_comments_entry ON comments(entry_id);
+
+                ALTER TABLE entries ADD COLUMN instrument TEXT;
+                ALTER TABLE trades ADD COLUMN instrument TEXT;
+
+                UPDATE entries SET instrument =
+                  (SELECT instrument FROM sessions WHERE sessions.id = entries.session_id);
+                UPDATE trades SET instrument =
+                  (SELECT e.instrument FROM entries e WHERE e.id = trades.entry_id);
+                """)
+        }
+
         return migrator
     }
 
@@ -201,6 +223,45 @@ final class AppDatabase {
 
     func save(_ trade: TradeRecord) throws {
         try dbQueue.write { db in try trade.save(db) }
+    }
+
+    // MARK: - Comments
+
+    /// All comments for a session's entries, oldest first, grouped by entry.
+    func comments(sessionId: String) throws -> [String: [CommentRecord]] {
+        let rows = try dbQueue.read { db in
+            try CommentRecord.fetchAll(
+                db,
+                sql: """
+                    SELECT comments.* FROM comments
+                    JOIN entries ON entries.id = comments.entry_id
+                    WHERE entries.session_id = ?
+                    ORDER BY comments.ts ASC
+                    """,
+                arguments: [sessionId])
+        }
+        return Dictionary(grouping: rows, by: \.entryId)
+    }
+
+    func save(_ comment: CommentRecord) throws {
+        try dbQueue.write { db in try comment.save(db) }
+    }
+
+    // MARK: - Deletes (post CRUD)
+
+    /// Removes an entry and everything hanging off it (comments, trades).
+    func deleteEntry(id: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM comments WHERE entry_id = ?", arguments: [id])
+            try db.execute(sql: "DELETE FROM trades WHERE entry_id = ?", arguments: [id])
+            try db.execute(sql: "DELETE FROM entries WHERE id = ?", arguments: [id])
+        }
+    }
+
+    func deleteTrade(id: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM trades WHERE id = ?", arguments: [id])
+        }
     }
 
     // MARK: - Chops
