@@ -24,6 +24,11 @@ struct TVRoundTrip: Identifiable {
         let dir: Double = side == "long" ? 1 : -1
         return (exitPrice - entryPrice) / instrument.tickSize * dir
     }
+    /// What the journal stores/shows: enum name when known, clean root
+    /// ("CL", "GC") otherwise — never the raw exchange-prefixed symbol.
+    var instrumentName: String {
+        instrument?.rawValue ?? TVImportParser.shortRoot(symbol)
+    }
 }
 
 struct TVImportParse {
@@ -74,8 +79,11 @@ enum TVImportParser {
     // MARK: - Public
 
     static func parse(_ text: String) -> TVImportParse {
+        // Balance-history CSV export? Normalize it into the paste shape and
+        // run the same pipeline — one parser, two inputs.
+        let effective = normalizeCSV(text) ?? text
         var result = TVImportParse()
-        let events = extractEvents(from: text, warnings: &result.warnings)
+        let events = extractEvents(from: effective, warnings: &result.warnings)
         guard !events.isEmpty else {
             if result.warnings.isEmpty {
                 result.warnings.append("Nothing recognizable — copy the account history rows straight out of TradingView.")
@@ -153,6 +161,51 @@ enum TVImportParser {
 
         result.trips = trips.sorted { $0.exitTime < $1.exitTime }
         return result
+    }
+
+    // MARK: - CSV normalization (balance-history export)
+
+    /// TradingView's balance-history CSV ("Time,Balance before,Balance after,
+    /// Realized PnL (value),...,Action") carries the exact same sentences the
+    /// panel paste does — rebuild paste-shaped blocks from the rows and let
+    /// the normal pipeline eat them. Returns nil when the text isn't that CSV.
+    static func normalizeCSV(_ text: String) -> String? {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        guard let header = lines.first,
+              header.hasPrefix("Time,"), header.contains("Realized PnL"),
+              header.contains("Action") else { return nil }
+        var out: [String] = []
+        for row in lines.dropFirst() {
+            let cols = splitCSV(row)
+            guard cols.count >= 6 else { continue }
+            let time = cols[0]
+            guard let amount = Double(cols[3]) else { continue }
+            let action = cols[5]
+            out.append(time + "\t")
+            out.append(String(format: "%+.2f", amount))
+            out.append("USD")
+            out.append(action)
+        }
+        return out.isEmpty ? nil : out.joined(separator: "\n")
+    }
+
+    /// Minimal quoted-field CSV splitter (Action strings contain commas).
+    private static func splitCSV(_ row: String) -> [String] {
+        var cols: [String] = []
+        var cur = ""
+        var inQuotes = false
+        for ch in row {
+            if ch == "\"" {
+                inQuotes.toggle()
+            } else if ch == "," && !inQuotes {
+                cols.append(cur)
+                cur = ""
+            } else {
+                cur.append(ch)
+            }
+        }
+        cols.append(cur)
+        return cols
     }
 
     // MARK: - Line scanning
@@ -241,8 +294,8 @@ enum TVImportParser {
     /// "CME_MINI:NQ1!" -> Instrument. Symbol root is definitive; point value
     /// is the cross-check when the root is missing/odd.
     static func detectInstrument(symbol: String, pointValue: Double) -> Instrument? {
-        let root = (symbol.split(separator: ":").last.map(String.init) ?? symbol).uppercased()
-        for inst in [Instrument.MNQ, .MES, .NQ, .ES] where root.hasPrefix(inst.rawValue) {
+        let root = shortRoot(symbol)
+        for inst in [Instrument.MNQ, .MES, .MBT, .NQ, .ES, .CL, .GC] where root.hasPrefix(inst.rawValue) {
             return inst
         }
         switch pointValue {
@@ -250,8 +303,19 @@ enum TVImportParser {
         case 2: return .MNQ
         case 50: return .ES
         case 5: return .MES
+        case 1000: return .CL
+        case 100: return .GC
+        case 0.1: return .MBT
         default: return nil
         }
+    }
+
+    /// "NYMEX:CL1!" -> "CL" — clean fallback name for unknown products.
+    static func shortRoot(_ symbol: String) -> String {
+        var root = (symbol.split(separator: ":").last.map(String.init) ?? symbol).uppercased()
+        root = root.replacingOccurrences(of: "1!", with: "")
+        while let last = root.last, last.isNumber || last == "!" { root.removeLast() }
+        return root
     }
 
     // MARK: - Regex helpers

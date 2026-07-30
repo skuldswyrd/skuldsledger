@@ -1,32 +1,47 @@
 import Foundation
 
 /// Instruments the journal knows. Tick size/value are exchange constants
-/// (not plan values), safe to hardcode.
+/// (not plan values), safe to hardcode. CL/GC/MBT joined for the tournament
+/// era — the levels method is index-first, but the ledger records everything.
 enum Instrument: String, CaseIterable, Identifiable {
-    case NQ, MNQ, ES, MES
+    case NQ, MNQ, ES, MES, CL, GC, MBT
     var id: String { rawValue }
 
-    var tickSize: Double { 0.25 }
+    var tickSize: Double {
+        switch self {
+        case .NQ, .MNQ, .ES, .MES: return 0.25
+        case .CL: return 0.01
+        case .GC: return 0.10
+        case .MBT: return 5.0
+        }
+    }
     var tickValue: Double {
         switch self {
         case .NQ: return 5.0
         case .MNQ: return 0.5
         case .ES: return 12.5
         case .MES: return 1.25
+        case .CL: return 10.0     // $1,000/pt × 0.01
+        case .GC: return 10.0     // $100/pt × 0.10
+        case .MBT: return 0.5     // $0.10/pt × 5
         }
     }
     var autoTuneKey: String {
         switch self {
         case .NQ, .MNQ: return "NQ_MNQ"
         case .ES, .MES: return "ES_MES"
+        case .CL: return "CL"
+        case .GC: return "GC"
+        case .MBT: return "MBT"
         }
     }
 
     /// TradingView saves grabs as "MNQ1!_2026-07-22_12-40-23_5a21c.png" —
-    /// symbol root leads the filename. Longest roots first (MNQ before NQ).
+    /// symbol root leads the filename. Longest roots first (MNQ before NQ,
+    /// MBT before nothing that clashes).
     static func detect(fromFilename name: String) -> Instrument? {
         let upper = name.uppercased()
-        for inst in [Instrument.MNQ, .MES, .NQ, .ES] where upper.hasPrefix(inst.rawValue) {
+        for inst in [Instrument.MNQ, .MES, .MBT, .NQ, .ES, .CL, .GC] where upper.hasPrefix(inst.rawValue) {
             return inst
         }
         return nil

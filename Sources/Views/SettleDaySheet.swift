@@ -57,9 +57,10 @@ struct SettleDaySheet: View {
 
     private var pastePanel: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("TradingView → trading panel → account history → select today's rows → copy → paste here.")
+            Text("TradingView → trading panel → account history → copy rows → paste here. The balance-history CSV export's contents paste fine too. Multi-day pastes backfill each day's session — a whole tournament in one go.")
                 .font(Theme.monoSmall)
                 .foregroundColor(Theme.textDim)
+                .fixedSize(horizontal: false, vertical: true)
 
             TextEditor(text: $pasteText)
                 .font(.system(size: 11, design: .monospaced))
@@ -159,7 +160,7 @@ struct SettleDaySheet: View {
         let dup = duplicates.contains(trip.id)
         return HStack(spacing: 0) {
             cell(Self.etTime.string(from: trip.exitTime), width: 70)
-            cell(trip.instrument?.rawValue ?? trip.symbol, width: 46)
+            cell(trip.instrumentName, width: 46)
             HStack {
                 Text(trip.side.uppercased())
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -239,6 +240,7 @@ struct SettleDaySheet: View {
             }
             Group {
                 Text("\(s.created) imported as new posts")
+                if s.days > 1 { Text("\(s.days) session days touched — past days created as closed sessions") }
                 if s.matched > 0 { Text("\(s.matched) matched to manual trades (completed in place)") }
                 if s.duplicates > 0 { Text("\(s.duplicates) already journaled — skipped") }
                 if s.phantoms > 0 {

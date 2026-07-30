@@ -37,6 +37,8 @@ struct TVImportSummary {
     var matched = 0
     var duplicates = 0
     var phantoms = 0
+    /// Distinct session days the import touched (multi-day pastes backfill).
+    var days = 0
 }
 
 struct LevelDraft: Identifiable {
@@ -661,9 +663,8 @@ final class SessionStore: ObservableObject {
         guard let db else { return [] }
         var dupes: Set<UUID> = []
         for trip in parse.trips {
-            let inst = trip.instrument?.rawValue ?? trip.symbol
             if (try? db.importedTradeExists(
-                instrument: inst,
+                instrument: trip.instrumentName,
                 exitTime: Workspace.isoNow(now: trip.exitTime),
                 exitPrice: trip.exitPrice)) == true {
                 dupes.insert(trip.id)
@@ -672,31 +673,62 @@ final class SessionStore: ObservableObject {
         return dupes
     }
 
-    /// Broker fills become journal truth. Per trip: duplicate -> skipped;
-    /// an open manual trade at the same entry -> updated in place
-    /// (reconciled); else a new feed post + trade row tagged tv_import.
-    /// Mentor is NOT called on imported posts (seven robo-reviews = spam).
+    /// Broker fills become journal truth. Multi-day pastes route each trip
+    /// to its OWN session by ET date — missing past sessions are created
+    /// closed, so a whole tournament export backfills the journal and the
+    /// Trader Profile in one paste. Per trip: duplicate -> skipped; a
+    /// same-day open manual trade at the same entry -> completed in place;
+    /// else a new feed post + trade tagged tv_import. Mentor never called
+    /// on imports.
     func importTVTrades(_ parse: TVImportParse, plays: [UUID: PlayType], rawText: String) -> TVImportSummary? {
-        guard let db, var s = session else { return nil }
+        guard let db else { return nil }
         var summary = TVImportSummary()
+        var touched: [String: SessionRecord] = [:]
+
+        func sessionFor(date: String, instrument: String) -> SessionRecord? {
+            if let s = touched[date] { return s }
+            if let existing = (try? db.fetchSession(date: date)) ?? nil {
+                touched[date] = existing
+                return existing
+            }
+            let fresh = SessionRecord(
+                id: UUID().uuidString,
+                date: date,
+                instrument: instrument,
+                ibHigh: nil,
+                ibLow: nil,
+                tradesTaken: 0,
+                status: date == todayDate ? "open" : "done",
+                createdAt: Workspace.isoNow())
+            do {
+                try db.save(fresh)
+            } catch {
+                errorMessage = "Settle Day: could not create session for \(date): \(error.localizedDescription)"
+                return nil
+            }
+            touched[date] = fresh
+            return fresh
+        }
 
         for trip in parse.trips {
-            let instrumentStr = trip.instrument?.rawValue ?? trip.symbol
+            let instrumentStr = trip.instrumentName
             let exitISO = Workspace.isoNow(now: trip.exitTime)
             let entryISO = trip.entryTime.map { Workspace.isoNow(now: $0) }
+            let tripDate = Workspace.todayString(now: trip.exitTime)
             if (try? db.importedTradeExists(
                 instrument: instrumentStr, exitTime: exitISO, exitPrice: trip.exitPrice)) == true {
                 summary.duplicates += 1
                 continue
             }
+            guard let s = sessionFor(date: tripDate, instrument: instrumentStr) else { continue }
 
             let net = ((trip.netUsd) * 100).rounded() / 100
             let result = net > 0 ? "win" : (net < 0 ? "loss" : "scratch")
             let tickSize = trip.instrument?.tickSize ?? 0.25
 
-            // Open manual trade at (about) the same entry price -> the broker
-            // row completes it instead of duplicating it.
-            if let idx = trades.firstIndex(where: { t in
+            // Same-day open manual trade at (about) the same entry -> the
+            // broker row completes it instead of duplicating it.
+            if tripDate == todayDate, let idx = trades.firstIndex(where: { t in
                 t.source == nil && t.exitTime == nil && t.result == "open"
                     && (t.instrument ?? s.instrument) == instrumentStr
                     && t.entryPrice.map { abs($0 - trip.entryPrice) <= tickSize * 4 } == true
@@ -771,17 +803,21 @@ final class SessionStore: ObservableObject {
             }
         }
 
+        // Honest per-session counts for every day the import touched.
+        for (_, var s) in touched {
+            s.tradesTaken = (try? db.trades(sessionId: s.id).count) ?? s.tradesTaken
+            try? db.save(s)
+            if s.date == todayDate { session = s }
+        }
+        summary.days = touched.count
+
         // Manual rows the broker never produced — surfaced, never deleted.
         reloadAll()
         summary.phantoms = trades.filter { $0.source == nil && $0.exitTime == nil }.count
 
-        s.tradesTaken = trades.count
-        try? db.save(s)
-        session = s
-        reloadAll()
-
         // Raw paste kept beside the day's assets — audit trail + future
         // MAE replay input.
+        Workspace.ensureDayFolders(todayDate)
         let pasteURL = Workspace.dayDir(todayDate).appendingPathComponent("tv_ledger_paste.txt")
         try? rawText.write(to: pasteURL, atomically: true, encoding: .utf8)
 
