@@ -2,6 +2,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  SKULD UNIFIED v2 — one indicator, self-switching by chart timeframe.
 //
+//  v2.2.1 (2026-07-30): zone tune after first live day — zone = origin
+//     THIRD of the impulse body (not the whole body; trend days painted the
+//     chart solid), duplicate same-side overlapping zones suppressed,
+//     defaults tightened (share 0.80, vol 1.2x, max 4/side).
 //  v2.2 (2026-07-30): READABILITY + IMBALANCE ZONES.
 //   · Right-edge fit: label offset default 3 bars (was 8) — lines/labels sit
 //     next to price on every chart style, footprint included.
@@ -162,9 +166,9 @@ bool showPlan = input.bool(true, "Draw entry / stop / T1 on signal (auto-ends on
 string inSigSize = input.string("Normal", "Signal label size", options = ["Small", "Normal", "Large"], group = GT)
 
 bool  enImb      = input.bool(true, "Draw imbalance zones", group = GZ, tooltip = "Footprint-style stacked-imbalance PROXY from the lower-TF volume feed. Pine cannot read the chart's own footprint boxes — this recomputes the same idea: bars where one side did ≥ the ratio share of real volume leave a zone (bar body) that extends right until price closes through its far side.")
-float inImbRatio = input.float(0.75, "One-sided volume share ≥", minval = 0.55, maxval = 0.95, step = 0.05, group = GZ)
-float inImbVolK  = input.float(1.0, "Bar volume ≥ × 20-bar avg", minval = 0.0, step = 0.1, group = GZ)
-int   inImbMax   = input.int(5, "Max live zones per side", minval = 1, maxval = 12, group = GZ)
+float inImbRatio = input.float(0.8, "One-sided volume share ≥", minval = 0.55, maxval = 0.95, step = 0.05, group = GZ)
+float inImbVolK  = input.float(1.2, "Bar volume ≥ × 20-bar avg", minval = 0.0, step = 0.1, group = GZ)
+int   inImbMax   = input.int(4, "Max live zones per side", minval = 1, maxval = 12, group = GZ)
 int   inImbBonus = input.int(2, "Cluster rank bonus inside a zone", minval = 0, maxval = 5, group = GZ, tooltip = "A ranked cluster sitting inside a live zone scores this much higher (label shows ◆). Level + resting imbalance = confluence.")
 
 bool showDash = input.bool(true, "Status panel", group = GD)
@@ -795,9 +799,24 @@ if barstate.isconfirmed
             float shr = math.max(upV, dnV) / totV
             if shr >= inImbRatio and high > low
                 int zDir = upV >= dnV ? 1 : -1
-                float zHi = math.max(open, close)
-                float zLo = math.min(open, close)
-                if zHi > zLo
+                float bodyHi = math.max(open, close)
+                float bodyLo = math.min(open, close)
+                // Footprint imbalances are ROWS, not whole bars — whole
+                // bodies painted trend days solid green. Zone = the ORIGIN
+                // third of the impulse body: where the aggressive side
+                // actually stepped in (min 2 ticks thick).
+                float third = math.max((bodyHi - bodyLo) / 3.0, 2 * syminfo.mintick)
+                float zHi = zDir == 1 ? bodyLo + third : bodyHi
+                float zLo = zDir == 1 ? bodyLo : bodyHi - third
+                // consecutive one-sided bars re-print the same area — one
+                // zone per area per side is the signal, the rest is paint
+                bool dupe = false
+                float zMid = (zHi + zLo) / 2.0
+                if imbLo.size() > 0
+                    for i = 0 to imbLo.size() - 1
+                        if imbDir.get(i) == zDir and zMid >= imbLo.get(i) and zMid <= imbHi.get(i)
+                            dupe := true
+                if zHi > zLo and not dupe
                     color zc = zDir == 1 ? colImbB : colImbS
                     imbBx.push(box.new(time, zHi, time + barMs, zLo, xloc = xloc.bar_time, extend = extend.right, bgcolor = color.new(zc, 88), border_color = color.new(zc, 60), border_width = 1))
                     imbHi.push(zHi)
