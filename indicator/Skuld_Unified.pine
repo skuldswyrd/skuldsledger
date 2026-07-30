@@ -2,6 +2,25 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  SKULD UNIFIED v2 — one indicator, self-switching by chart timeframe.
 //
+//  v2.2 (2026-07-30): READABILITY + IMBALANCE ZONES.
+//   · Right-edge fit: label offset default 3 bars (was 8) — lines/labels sit
+//     next to price on every chart style, footprint included.
+//   · Dashboard: position selectable (any corner) + brand palette (dark card,
+//     colored state text — no more stock green/red fills).
+//   · Signals: ONE clean label per fire (play + direction + score), brand
+//     colors, size selectable. Triangles/plotshapes and the long plan text
+//     label are gone. Plan lines (E/S/T) + outcome stamps stay. Stop line is
+//     red now; purple stays the short-direction brand color.
+//   · IMBALANCE ZONES (footprint proxy): per-bar buy/sell volume split from
+//     the lower-TF feed already powering the profiles. A bar whose one-sided
+//     volume share ≥ ratio (default 75%) on real volume prints a zone box
+//     (bar body, extended right) — the Pine approximation of stacked
+//     footprint imbalances. Zones die when price closes through the far
+//     side. Clusters sitting inside a live zone get +2 rank (input) and a ◆
+//     tag — level + resting imbalance = the confluence you trade toward.
+//     NOTE: Pine cannot read the chart's own footprint boxes — this proxy is
+//     computed from lower-TF up/down volume instead.
+//
 //  v2.1 (2026-07-21): APP toward-play — ride INTO a powerful level once
 //     inside the approach window (1.0-1.5x target). With-move close, level
 //     untouched in the lookback, one shot per level. Target lands at/just in
@@ -43,7 +62,7 @@
 //  Candle-close confirmed only. No lookahead. No repaint.
 //  One alert covers all: "Any alert() function call".
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("Skuld Unified v2 — Levels · IB · MR · BRT · Dev Levels", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("Skuld Unified v2.2 — Levels · IB · MR · APP · Imbalance", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
 // ── ASSET AUTO-TUNE ────────────────────────────────────────────────────────
 bool isES = syminfo.root == "ES" or syminfo.root == "MES"
@@ -62,6 +81,7 @@ const string GR = "Play · MR (reaction at level)"
 const string GB = "Play · BRT (break-retest continuation)"
 const string GA = "Play · APP (toward a powerful level)"
 const string GT = "Discipline & trade plan"
+const string GZ = "Imbalance zones (footprint proxy)"
 const string GD = "Dashboard"
 const string GC = "Colors & lines"
 
@@ -89,7 +109,7 @@ int   inMinRank = input.int(6, "Min rank to trade a level", minval = 1, maxval =
 bool  showLvls  = input.bool(true, "Draw cluster lines + labels", group = GK)
 int   inMaxL    = input.int(12, "Max clusters shown (nearest kept)", minval = 2, maxval = 40, group = GK)
 float inHide    = input.float(0, "Hide clusters farther than (pts, 0 = off)", minval = 0, group = GK)
-int   inOff     = input.int(8, "Label offset (bars right)", minval = 1, maxval = 50, group = GK)
+int   inOff     = input.int(3, "Label offset (bars right)", minval = 1, maxval = 50, group = GK, tooltip = "Bars between the last candle and the line end / label. Bar-based, so it stays put at every zoom. Footprint charts have wide bars — keep this small (2-4).")
 bool  showPx    = input.bool(true, "Show price in labels", group = GK)
 
 string inVpStyle  = input.string("Lines", "Profile style", options = ["Lines", "Bars", "Off"], group = GV, tooltip = "Lines = no histogram, developing levels only (draw profiles by hand). Bars = borderless histogram. Off = nothing.")
@@ -139,8 +159,16 @@ int  inCd     = input.int(5, "Cooldown bars between signals", minval = 0, group 
 bool useLunch = input.bool(false, "Lunch blackout", group = GT)
 string lunchSess = input.session("1130-1330", "Lunch window (ET)", group = GT)
 bool showPlan = input.bool(true, "Draw entry / stop / T1 on signal (auto-ends on TP/SL hit)", group = GT)
+string inSigSize = input.string("Normal", "Signal label size", options = ["Small", "Normal", "Large"], group = GT)
+
+bool  enImb      = input.bool(true, "Draw imbalance zones", group = GZ, tooltip = "Footprint-style stacked-imbalance PROXY from the lower-TF volume feed. Pine cannot read the chart's own footprint boxes — this recomputes the same idea: bars where one side did ≥ the ratio share of real volume leave a zone (bar body) that extends right until price closes through its far side.")
+float inImbRatio = input.float(0.75, "One-sided volume share ≥", minval = 0.55, maxval = 0.95, step = 0.05, group = GZ)
+float inImbVolK  = input.float(1.0, "Bar volume ≥ × 20-bar avg", minval = 0.0, step = 0.1, group = GZ)
+int   inImbMax   = input.int(5, "Max live zones per side", minval = 1, maxval = 12, group = GZ)
+int   inImbBonus = input.int(2, "Cluster rank bonus inside a zone", minval = 0, maxval = 5, group = GZ, tooltip = "A ranked cluster sitting inside a live zone scores this much higher (label shows ◆). Level + resting imbalance = confluence.")
 
 bool showDash = input.bool(true, "Status panel", group = GD)
+string inDashPos = input.string("Top right", "Panel position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = GD)
 
 color colS5   = input.color(#ffd54f, "★★★★★ cluster", group = GC)
 color colS4   = input.color(#ff9800, "★★★★ cluster", group = GC)
@@ -156,7 +184,10 @@ color colVwap = input.color(#00bcd4, "VWAP", group = GC)
 color colBand = input.color(#9598a1, "σ bands", group = GC)
 color colOn   = input.color(#26a69a, "ONH/ONL", group = GC)
 color colUp   = input.color(#00FF00, "Long signals / T1", group = GC)
-color colDn   = input.color(#673ab7, "Short signals / stop", group = GC)
+color colDn   = input.color(#673ab7, "Short signals", group = GC)
+color colStop = input.color(#ef5350, "Stop line / loss", group = GC)
+color colImbB = input.color(#00FF00, "Buy imbalance zone", group = GC)
+color colImbS = input.color(#673ab7, "Sell imbalance zone", group = GC)
 color colText = input.color(#d1d4dc, "Labels / plan text", group = GC)
 string inSty  = input.string("Solid", "Cluster line style", options = ["Solid", "Dashed", "Dotted"], group = GC)
 int inWidW = input.int(3, "Line width · weekly-scope cluster", minval = 1, maxval = 5, group = GC)
@@ -177,6 +208,7 @@ float mrTol   = inMrTol > 0 ? inMrTol : 2 * clustW
 float brtEsc  = inBrtEsc > 0 ? inBrtEsc : clustW
 string ltfStr = inLtf != "" ? inLtf : tfSec >= 3600 ? "5" : tfSec >= 60 ? "1" : "1S"
 string prSty  = inSty == "Dashed" ? line.style_dashed : inSty == "Dotted" ? line.style_dotted : line.style_solid
+string sigSz  = inSigSize == "Large" ? size.large : inSigSize == "Small" ? size.small : size.normal
 
 // global series used inside functions — must exist before function defs
 float cPrev  = close[1]
@@ -483,9 +515,12 @@ f_rows(Prof p, int rowsN) =>
                     dI -= 1
     [rv, lo, rowH, tot, pocI, uI, dI]
 
-f_row(table t, int r, string k, string v, color bg) =>
-    table.cell(t, 0, r, k, text_color = color.white, text_size = size.tiny, bgcolor = color.new(#000000, 0))
-    table.cell(t, 1, r, v, text_color = color.white, text_size = size.tiny, bgcolor = bg)
+// Brand dashboard row: dark card, dim key, STATE-COLORED value text on a
+// whisper of the same color — matches the label aesthetic on the chart
+// instead of stock green/red cell fills.
+f_row(table t, int r, string k, string v, color st) =>
+    table.cell(t, 0, r, k, text_color = #787b86, text_size = size.tiny, bgcolor = color.new(#0d0d10, 8))
+    table.cell(t, 1, r, v, text_color = st, text_size = size.tiny, bgcolor = color.new(st, 86))
 
 // ── STATE ──────────────────────────────────────────────────────────────────
 var Prof dP = f_newProf()
@@ -545,12 +580,36 @@ var float devDVal = na
 var line planE = na
 var line planS = na
 var line planT = na
-var label planLb = na
 var label planRes = na
 var int planDir = 0
 var float planSp = na
 var float planTp = na
 var bool planOn = false
+// imbalance zones (footprint proxy) — parallel arrays, newest last
+var array<box>   imbBx  = array.new<box>()
+var array<float> imbHi  = array.new<float>()
+var array<float> imbLo  = array.new<float>()
+var array<int>   imbDir = array.new<int>()
+// last lower-TF close carried across chart bars for the up/down volume split
+var float lastLtf = na
+
+// price inside a live zone? 1 buy zone · -1 sell zone · 0 none
+f_inZone(float px) =>
+    int z = 0
+    if enImb and imbLo.size() > 0
+        for i = 0 to imbLo.size() - 1
+            if px >= imbLo.get(i) and px <= imbHi.get(i)
+                z := imbDir.get(i)
+    z
+
+// drop zone i everywhere
+f_zoneKill(int i) =>
+    box.delete(imbBx.get(i))
+    imbBx.remove(i)
+    imbHi.remove(i)
+    imbLo.remove(i)
+    imbDir.remove(i)
+    true
 
 [ltfC, ltfV] = request.security_lower_tf(syminfo.tickerid, ltfStr, [close, volume])
 
@@ -590,9 +649,6 @@ if newRTH
     if not na(planT)
         line.delete(planT)
         planT := line(na)
-    if not na(planLb)
-        label.delete(planLb)
-        planLb := label(na)
     if not na(planRes)
         label.delete(planRes)
         planRes := label(na)
@@ -709,6 +765,58 @@ if barstate.isconfirmed
     devDPoc := pd1
     devDVah := vd1
     devDVal := wd1
+    // ── imbalance zones (footprint proxy) ────────────────────────────────
+    // Up/down volume split off the same lower-TF feed the profiles eat:
+    // an uptick LTF close books its volume to the buyers, a downtick to the
+    // sellers. One-sided share ≥ ratio on real volume = the bar's body
+    // becomes a zone (approximation of stacked footprint imbalances).
+    if enImb
+        float upV = 0.0
+        float dnV = 0.0
+        int nZ = array.size(ltfC)
+        if nZ > 0
+            for i = 0 to nZ - 1
+                float pc = array.get(ltfC, i)
+                if not na(pc)
+                    if not na(lastLtf)
+                        if pc > lastLtf
+                            upV += nz(array.get(ltfV, i))
+                        else if pc < lastLtf
+                            dnV += nz(array.get(ltfV, i))
+                    lastLtf := pc
+        float totV = upV + dnV
+        // mitigation first: close through the far side kills the zone
+        if imbLo.size() > 0
+            for i = imbLo.size() - 1 to 0
+                bool dead = imbDir.get(i) == 1 ? close < imbLo.get(i) : close > imbHi.get(i)
+                if dead
+                    f_zoneKill(i)
+        if not htfMode and totV > 0 and (inImbVolK == 0 or nz(volume) >= inImbVolK * volSma)
+            float shr = math.max(upV, dnV) / totV
+            if shr >= inImbRatio and high > low
+                int zDir = upV >= dnV ? 1 : -1
+                float zHi = math.max(open, close)
+                float zLo = math.min(open, close)
+                if zHi > zLo
+                    color zc = zDir == 1 ? colImbB : colImbS
+                    imbBx.push(box.new(time, zHi, time + barMs, zLo, xloc = xloc.bar_time, extend = extend.right, bgcolor = color.new(zc, 88), border_color = color.new(zc, 60), border_width = 1))
+                    imbHi.push(zHi)
+                    imbLo.push(zLo)
+                    imbDir.push(zDir)
+                    // cap per side, oldest out
+                    int nB = 0
+                    int nS = 0
+                    for i = 0 to imbDir.size() - 1
+                        if imbDir.get(i) == 1
+                            nB += 1
+                        else
+                            nS += 1
+                    if nB > inImbMax or nS > inImbMax
+                        int killDir = nB > inImbMax ? 1 : -1
+                        for i = 0 to imbDir.size() - 1
+                            if imbDir.get(i) == killDir
+                                f_zoneKill(i)
+                                break
 
 // ── SIGNAL ENGINE (execution mode · confirmed close only) ──────────────────
 bool sigIBUp = false
@@ -746,10 +854,12 @@ if barstate.isconfirmed and not htfMode
         array<string> mnm = array.new<string>()
         if clP.size() > 0
             for i = 0 to clP.size() - 1
-                if clR.get(i) >= inMinRank
+                // live-zone confluence boosts the cluster's effective rank
+                float rEff = clR.get(i) + (f_inZone(clP.get(i)) != 0 ? inImbBonus : 0)
+                if rEff >= inMinRank
                     mp.push(clP.get(i))
-                    mrk.push(clR.get(i))
-                    mnm.push(clN.get(i))
+                    mrk.push(rEff)
+                    mnm.push(clN.get(i) + (rEff > clR.get(i) ? "◆" : ""))
         if inclVwap and not na(vwapV) and 10 >= inMinRank
             mp.push(vwapV)
             mrk.push(10)
@@ -842,10 +952,11 @@ if barstate.isconfirmed and not htfMode
         array<string> anm = array.new<string>()
         if clP.size() > 0
             for i = 0 to clP.size() - 1
-                if clR.get(i) >= inAppRank
+                float rEffA = clR.get(i) + (f_inZone(clP.get(i)) != 0 ? inImbBonus : 0)
+                if rEffA >= inAppRank
                     ap.push(clP.get(i))
-                    ark.push(clR.get(i))
-                    anm.push(clN.get(i))
+                    ark.push(rEffA)
+                    anm.push(clN.get(i) + (rEffA > clR.get(i) ? "◆" : ""))
         if inAppDyn
             if not na(vwapV) and 10 >= inAppRank
                 ap.push(vwapV)
@@ -907,7 +1018,6 @@ if barstate.isconfirmed and not htfMode
             fireTag := aDir == 1 ? "APP ▲" : "APP ▼"
             fireLvl := f_scoreTxt(aBestR) + " " + aNm + " → " + str.tostring(aLvl, format.mintick)
             appFired.push(aLvl)
-            label.new(time, aDir == 1 ? low : high, "APP", xloc = xloc.bar_time, style = aDir == 1 ? label.style_label_up : label.style_label_down, color = color.new(aDir == 1 ? colUp : colDn, 30), textcolor = aDir == 1 ? color.black : color.white, size = size.tiny)
     // BRT — punched cluster, retest holds → continuation
     if enBRT and clP.size() > 0
         for i = 0 to clP.size() - 1
@@ -943,7 +1053,7 @@ if barstate.isconfirmed and not htfMode
                         fireDir := -1
                         fireTag := "BRT ▼"
                         fireLvl := f_scoreTxt(clR.get(i)) + " " + clN.get(i) + " @ " + str.tostring(p, format.mintick)
-    // fire: count, alert, trade plan
+    // fire: count, alert, ONE signal label, trade plan lines
     if fireDir != 0
         sigCnt += 1
         lastSigBar := bar_index
@@ -951,6 +1061,10 @@ if barstate.isconfirmed and not htfMode
         float ps = pe - fireDir * stopPts
         float pt = pe + fireDir * tgtPts
         alert("SKULD " + syminfo.ticker + " " + timeframe.period + " — " + fireTag + " · " + fireLvl + " · E " + str.tostring(pe, format.mintick) + " · S " + str.tostring(ps, format.mintick) + " · T " + str.tostring(pt, format.mintick) + " (" + str.tostring(tgtT) + "t) · signal " + str.tostring(sigCnt) + "/" + str.tostring(inMaxSig), alert.freq_once_per_bar_close)
+        // one label per signal — play, direction, score. Brand color block,
+        // stays on the chart as the day's signal trail. Details live in the
+        // alert text and the plan lines, not in chart clutter.
+        label.new(time, fireDir == 1 ? low : high, fireTag, xloc = xloc.bar_time, style = fireDir == 1 ? label.style_label_up : label.style_label_down, color = color.new(fireDir == 1 ? colUp : colDn, 12), textcolor = fireDir == 1 ? color.black : color.white, size = sigSz, tooltip = fireLvl)
         if showPlan
             if not na(planE)
                 line.delete(planE)
@@ -958,14 +1072,11 @@ if barstate.isconfirmed and not htfMode
                 line.delete(planS)
             if not na(planT)
                 line.delete(planT)
-            if not na(planLb)
-                label.delete(planLb)
             if not na(planRes)
                 label.delete(planRes)
             planE := line.new(time, pe, time, pe, xloc = xloc.bar_time, color = colText, width = 2)
-            planS := line.new(time, ps, time, ps, xloc = xloc.bar_time, color = colDn, style = line.style_dashed)
+            planS := line.new(time, ps, time, ps, xloc = xloc.bar_time, color = colStop, style = line.style_dashed)
             planT := line.new(time, pt, time, pt, xloc = xloc.bar_time, color = colUp, style = line.style_dotted)
-            planLb := label.new(time, pe, fireTag + "  E " + str.tostring(pe, format.mintick) + "  S " + str.tostring(ps, format.mintick) + "  T " + str.tostring(pt, format.mintick), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(#000000, 20), textcolor = colText, size = size.small)
             planDir := fireDir
             planSp := ps
             planTp := pt
@@ -983,7 +1094,7 @@ if barstate.isconfirmed and not htfMode
                 label.delete(planRes)
             bool win = tpHit and not slHit
             string resTxt = slHit and tpHit ? "TP+SL same bar — check" : win ? "TP ✓ +" + str.tostring(tgtT) + "t" : "SL ✗ -" + str.tostring(stopT) + "t"
-            planRes := label.new(time, win ? planTp : planSp, resTxt, xloc = xloc.bar_time, style = win ? label.style_label_up : label.style_label_down, color = color.new(win ? colUp : colDn, 20), textcolor = win ? color.black : color.white, size = size.small)
+            planRes := label.new(time, win ? planTp : planSp, resTxt, xloc = xloc.bar_time, style = win ? label.style_label_up : label.style_label_down, color = color.new(win ? colUp : colStop, 20), textcolor = win ? color.black : color.white, size = size.small)
         else if not inRTH
             planOn := false
 
@@ -998,12 +1109,8 @@ plot(showOn and not htfMode and (inRTH or inON) ? onLo : na, "ONL", color = colO
 plot(not htfMode and inRTH and not na(ibHi) ? ibHi : na, "IBH", color = color.new(colDn, 30), style = plot.style_linebr)
 plot(not htfMode and inRTH and not na(ibLo) ? ibLo : na, "IBL", color = color.new(colDn, 30), style = plot.style_linebr)
 
-plotshape(sigIBUp, "IB ▲", shape.triangleup, location.belowbar, color = colUp, text = "IB", textcolor = colUp, size = size.small)
-plotshape(sigIBDn, "IB ▼", shape.triangledown, location.abovebar, color = colDn, text = "IB", textcolor = colDn, size = size.small)
-plotshape(sigMRUp, "MR ▲", shape.triangleup, location.belowbar, color = colUp, text = "MR", textcolor = colUp, size = size.small)
-plotshape(sigMRDn, "MR ▼", shape.triangledown, location.abovebar, color = colDn, text = "MR", textcolor = colDn, size = size.small)
-plotshape(sigBRTUp, "BRT ▲", shape.diamond, location.belowbar, color = colUp, text = "BRT", textcolor = colUp, size = size.small)
-plotshape(sigBRTDn, "BRT ▼", shape.diamond, location.abovebar, color = colDn, text = "BRT", textcolor = colDn, size = size.small)
+// signal marks are label.new at fire time now (one clean block per signal) —
+// the six plotshape triangles are gone, and their plot-budget slots with them.
 
 // ── RENDER · DEVELOPING LEVELS (last bar) ──────────────────────────────────
 var array<line> devLn = array.new<line>()
@@ -1103,22 +1210,32 @@ if barstate.islast
                 int wd = clS.get(i) == 3 ? inWidW : clS.get(i) == 2 ? inWidD : inWidS
                 float y = clP.get(i)
                 clLn.push(line.new(math.max(bar_index - 30, 0), y, bar_index + inOff, y, color = cc, style = prSty, width = wd))
-                string txt = f_scoreTxt(clR.get(i)) + " " + clN.get(i) + (showPx ? "  " + str.tostring(y, format.mintick) : "") + " · " + str.tostring(d, format.mintick)
+                // ◆ = cluster sits inside a live imbalance zone (rank bonus active)
+                string zTag = f_inZone(y) != 0 ? " ◆" : ""
+                string txt = f_scoreTxt(clR.get(i)) + zTag + " " + clN.get(i) + (showPx ? "  " + str.tostring(y, format.mintick) : "") + " · " + str.tostring(d, format.mintick)
                 clLb.push(label.new(bar_index + inOff, y, txt, style = label.style_label_left, color = color.new(color.black, 100), textcolor = cc, size = size.small))
 
 // ── DASHBOARD ──────────────────────────────────────────────────────────────
-var table dash = showDash ? table.new(position.top_right, 2, 8, bgcolor = color.new(#000000, 10), border_width = 1, border_color = color.new(#787b86, 70)) : table(na)
+// Position is user-picked (he parks it away from the chart he's running).
+f_dashPos() =>
+    inDashPos == "Top left" ? position.top_left : inDashPos == "Bottom right" ? position.bottom_right : inDashPos == "Bottom left" ? position.bottom_left : position.top_right
+
+var table dash = showDash ? table.new(f_dashPos(), 2, 9, bgcolor = color.new(#0d0d10, 8), border_width = 1, border_color = color.new(#673ab7, 55)) : table(na)
 if showDash and barstate.islast
-    color offC = color.new(#787b86, 60)
-    color grnC = color.new(#26a69a, 15)
-    color redC = color.new(#ef5350, 25)
-    color bluC = color.new(#2962ff, 15)
-    f_row(dash, 0, "MODE", htfMode ? "STRUCTURE ≥" + inModeTf : "EXECUTION <" + inModeTf, htfMode ? bluC : grnC)
+    // brand states: neon green good · amber forming · red blocked/over ·
+    // cyan info · purple structure · gray off
+    color okC   = #00ff00
+    color offC  = #787b86
+    color warnC = #ffb300
+    color badC  = #ef5350
+    color infC  = #00bcd4
+    color strC  = #673ab7
+    f_row(dash, 0, "MODE", htfMode ? "STRUCTURE ≥" + inModeTf : "EXECUTION <" + inModeTf, htfMode ? strC : okC)
     f_row(dash, 1, "TUNE", (isES ? "ES" : "NQ") + " T " + str.tostring(tgtT) + "t · S " + str.tostring(stopT) + "t · W " + str.tostring(clustW, format.mintick), offC)
     string sessN = inRTH ? "NY" : inL ? "LDN" : inA ? "ASIA" : "OFF"
-    f_row(dash, 2, "SESSION", sessN, inRTH ? grnC : offC)
+    f_row(dash, 2, "SESSION", sessN, inRTH ? okC : offC)
     string ibTxt = htfMode ? "—" : ibDone and not na(ibHi) ? str.tostring(ibHi - ibLo, format.mintick) + (firedUp > 0 ? " ▲" : firedDn > 0 ? " ▼" : "") : inIBw ? "forming" : "waiting"
-    f_row(dash, 3, "IB", ibTxt, ibDone ? grnC : inIBw ? color.new(#ffb300, 15) : offC)
+    f_row(dash, 3, "IB", ibTxt, ibDone ? okC : inIBw ? warnC : offC)
     // nearest = clusters AND developing levels — the live map in one row
     string nearTxt = "building"
     float bd = 1.0e18
@@ -1157,9 +1274,24 @@ if showDash and barstate.islast
         br := 6
     if bn != ""
         nearTxt := f_scoreTxt(br) + " " + bn + " · " + str.tostring(bd, format.mintick)
-    f_row(dash, 4, "NEAREST", nearTxt, offC)
+    f_row(dash, 4, "NEAREST", nearTxt, infC)
     string sPocTxt = na(devSPoc) ? "building" : str.tostring(devSPoc, format.mintick) + " · " + str.tostring(math.abs(close - devSPoc), format.mintick)
-    f_row(dash, 5, "sPOC", sPocTxt, na(devSPoc) ? offC : close > devSPoc ? grnC : redC)
-    f_row(dash, 6, "SIGNALS", str.tostring(sigCnt) + "/" + str.tostring(inMaxSig) + (sigCnt >= inMaxSig ? (inHardCap ? " DONE" : " ≥PLAN") : ""), sigCnt >= inMaxSig ? redC : grnC)
+    f_row(dash, 5, "sPOC", sPocTxt, na(devSPoc) ? offC : close > devSPoc ? okC : badC)
+    // live imbalance zones + nearest zone edge — the liquidity magnets row
+    string imbTxt = "—"
+    if enImb and imbLo.size() > 0
+        int zB = 0
+        int zS = 0
+        float zNear = 1.0e18
+        for i = 0 to imbLo.size() - 1
+            if imbDir.get(i) == 1
+                zB += 1
+            else
+                zS += 1
+            float dEdge = close > imbHi.get(i) ? close - imbHi.get(i) : close < imbLo.get(i) ? imbLo.get(i) - close : 0.0
+            zNear := math.min(zNear, dEdge)
+        imbTxt := "▲" + str.tostring(zB) + " · ▼" + str.tostring(zS) + " · " + (zNear == 0 ? "INSIDE" : str.tostring(zNear, format.mintick))
+    f_row(dash, 6, "IMB", imbTxt, not enImb or imbLo.size() == 0 ? offC : f_inZone(close) != 0 ? warnC : infC)
+    f_row(dash, 7, "SIGNALS", str.tostring(sigCnt) + "/" + str.tostring(inMaxSig) + (sigCnt >= inMaxSig ? (inHardCap ? " DONE" : " ≥PLAN") : ""), sigCnt >= inMaxSig ? badC : okC)
     string fTxt = htfMode ? "map only" : useLunch and inLunch ? "LUNCH" : not inRTH ? "OFF-SESSION" : "CLEAR"
-    f_row(dash, 7, "FILTER", fTxt, fTxt == "CLEAR" ? grnC : fTxt == "map only" ? bluC : redC)
+    f_row(dash, 8, "FILTER", fTxt, fTxt == "CLEAR" ? okC : fTxt == "map only" ? strC : badC)
