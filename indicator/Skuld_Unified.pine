@@ -2,6 +2,17 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  SKULD UNIFIED v2 — one indicator, self-switching by chart timeframe.
 //
+//  v2.3 (2026-07-30): CLOCK + ZONE FRESHNESS — tournament-ledger-driven.
+//   · CLOCK row + cold-hour tag: prime hours (default 0800-1030 ET) vs cold
+//     hours (default 0000-0100, 0700-0800, 1100-1200, 1500-1600 ET — the
+//     ledger's proven bleed windows) on the dashboard; alerts fired in cold
+//     hours carry a "COLD HOUR" tag. Info only, session inputs, retune as
+//     the data moves. Nothing is ever blocked.
+//   · Zone freshness decay: every pass through a zone consumes the resting
+//     orders that made it. Zones now count touches — first touch DIMS the
+//     box (the trade was that touch), N touches (default 2) retires it.
+//     Close-through the far side still kills instantly. Fresh + untouched =
+//     trustworthy; chopped-through repeatedly = gone, not wallpaper.
 //  v2.2.1 (2026-07-30): zone tune after first live day — zone = origin
 //     THIRD of the impulse body (not the whole body; trend days painted the
 //     chart solid), duplicate same-side overlapping zones suppressed,
@@ -66,7 +77,7 @@
 //  Candle-close confirmed only. No lookahead. No repaint.
 //  One alert covers all: "Any alert() function call".
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("Skuld Unified v2.2 — Levels · IB · MR · APP · Imbalance", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("Skuld Unified v2.3 — Levels · IB · MR · APP · Imbalance", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
 // ── ASSET AUTO-TUNE ────────────────────────────────────────────────────────
 bool isES = syminfo.root == "ES" or syminfo.root == "MES"
@@ -164,11 +175,14 @@ bool useLunch = input.bool(false, "Lunch blackout", group = GT)
 string lunchSess = input.session("1130-1330", "Lunch window (ET)", group = GT)
 bool showPlan = input.bool(true, "Draw entry / stop / T1 on signal (auto-ends on TP/SL hit)", group = GT)
 string inSigSize = input.string("Normal", "Signal label size", options = ["Small", "Normal", "Large"], group = GT)
+string primeSess = input.session("0800-1030", "Prime hours (ET)", group = GT, tooltip = "Dashboard CLOCK shows PRIME here. Default = the window that printed in the tournament ledger.")
+string coldSess  = input.session("0000-0100,0700-0800,1100-1200,1500-1600", "Cold hours (ET)", group = GT, tooltip = "Dashboard CLOCK shows COLD here and alerts carry a COLD HOUR tag. Defaults = the ledger's proven bleed windows. Display only — nothing is blocked.")
 
 bool  enImb      = input.bool(true, "Draw imbalance zones", group = GZ, tooltip = "Footprint-style stacked-imbalance PROXY from the lower-TF volume feed. Pine cannot read the chart's own footprint boxes — this recomputes the same idea: bars where one side did ≥ the ratio share of real volume leave a zone (bar body) that extends right until price closes through its far side.")
 float inImbRatio = input.float(0.8, "One-sided volume share ≥", minval = 0.55, maxval = 0.95, step = 0.05, group = GZ)
 float inImbVolK  = input.float(1.2, "Bar volume ≥ × 20-bar avg", minval = 0.0, step = 0.1, group = GZ)
 int   inImbMax   = input.int(4, "Max live zones per side", minval = 1, maxval = 12, group = GZ)
+int   inImbTouches = input.int(2, "Zone retires after N touches", minval = 1, maxval = 6, group = GZ, tooltip = "Each traversal consumes the resting orders that made the zone. First touch dims it (that touch WAS the trade), N touches removes it. Close-through the far side always kills instantly.")
 int   inImbBonus = input.int(2, "Cluster rank bonus inside a zone", minval = 0, maxval = 5, group = GZ, tooltip = "A ranked cluster sitting inside a live zone scores this much higher (label shows ◆). Level + resting imbalance = confluence.")
 
 bool showDash = input.bool(true, "Status panel", group = GD)
@@ -233,6 +247,8 @@ bool inON    = not na(time(timeframe.period, onSess, TZ))
 bool inA     = not na(time(timeframe.period, sAsia, TZ))
 bool inL     = not na(time(timeframe.period, sLdn, TZ))
 bool inLunch = not na(time(timeframe.period, lunchSess, TZ))
+bool inPrime = not na(time(timeframe.period, primeSess, TZ))
+bool inCold  = not na(time(timeframe.period, coldSess, TZ))
 bool newRTH  = inRTH and not inRTH[1]
 
 // ── TYPES & FUNCTIONS ──────────────────────────────────────────────────────
@@ -594,6 +610,8 @@ var array<box>   imbBx  = array.new<box>()
 var array<float> imbHi  = array.new<float>()
 var array<float> imbLo  = array.new<float>()
 var array<int>   imbDir = array.new<int>()
+var array<int>   imbTch = array.new<int>()   // touches since creation
+var array<int>   imbBorn = array.new<int>()  // creation bar time (skip self-touch)
 // last lower-TF close carried across chart bars for the up/down volume split
 var float lastLtf = na
 
@@ -613,6 +631,8 @@ f_zoneKill(int i) =>
     imbHi.remove(i)
     imbLo.remove(i)
     imbDir.remove(i)
+    imbTch.remove(i)
+    imbBorn.remove(i)
     true
 
 [ltfC, ltfV] = request.security_lower_tf(syminfo.tickerid, ltfStr, [close, volume])
@@ -789,10 +809,22 @@ if barstate.isconfirmed
                             dnV += nz(array.get(ltfV, i))
                     lastLtf := pc
         float totV = upV + dnV
-        // mitigation first: close through the far side kills the zone
+        // mitigation: close through the far side kills instantly; every
+        // other traversal COUNTS — passes consume the resting orders, so
+        // touch 1 dims the box (that touch was the trade) and touch N
+        // retires it. No more chopped-through wallpaper zones.
         if imbLo.size() > 0
             for i = imbLo.size() - 1 to 0
                 bool dead = imbDir.get(i) == 1 ? close < imbLo.get(i) : close > imbHi.get(i)
+                if not dead and time != imbBorn.get(i) and high >= imbLo.get(i) and low <= imbHi.get(i)
+                    int tch = imbTch.get(i) + 1
+                    imbTch.set(i, tch)
+                    if tch >= inImbTouches
+                        dead := true
+                    else
+                        color dimC = imbDir.get(i) == 1 ? colImbB : colImbS
+                        box.set_bgcolor(imbBx.get(i), color.new(dimC, 93))
+                        box.set_border_color(imbBx.get(i), color.new(dimC, 78))
                 if dead
                     f_zoneKill(i)
         if not htfMode and totV > 0 and (inImbVolK == 0 or nz(volume) >= inImbVolK * volSma)
@@ -822,6 +854,8 @@ if barstate.isconfirmed
                     imbHi.push(zHi)
                     imbLo.push(zLo)
                     imbDir.push(zDir)
+                    imbTch.push(0)
+                    imbBorn.push(time)
                     // cap per side, oldest out
                     int nB = 0
                     int nS = 0
@@ -1079,7 +1113,7 @@ if barstate.isconfirmed and not htfMode
         float pe = close
         float ps = pe - fireDir * stopPts
         float pt = pe + fireDir * tgtPts
-        alert("SKULD " + syminfo.ticker + " " + timeframe.period + " — " + fireTag + " · " + fireLvl + " · E " + str.tostring(pe, format.mintick) + " · S " + str.tostring(ps, format.mintick) + " · T " + str.tostring(pt, format.mintick) + " (" + str.tostring(tgtT) + "t) · signal " + str.tostring(sigCnt) + "/" + str.tostring(inMaxSig), alert.freq_once_per_bar_close)
+        alert("SKULD " + syminfo.ticker + " " + timeframe.period + " — " + fireTag + " · " + fireLvl + " · E " + str.tostring(pe, format.mintick) + " · S " + str.tostring(ps, format.mintick) + " · T " + str.tostring(pt, format.mintick) + " (" + str.tostring(tgtT) + "t) · signal " + str.tostring(sigCnt) + "/" + str.tostring(inMaxSig) + (inCold ? " · COLD HOUR" : ""), alert.freq_once_per_bar_close)
         // one label per signal — play, direction, score. Brand color block,
         // stays on the chart as the day's signal trail. Details live in the
         // alert text and the plan lines, not in chart clutter.
@@ -1239,7 +1273,7 @@ if barstate.islast
 f_dashPos() =>
     inDashPos == "Top left" ? position.top_left : inDashPos == "Bottom right" ? position.bottom_right : inDashPos == "Bottom left" ? position.bottom_left : position.top_right
 
-var table dash = showDash ? table.new(f_dashPos(), 2, 9, bgcolor = color.new(#0d0d10, 8), border_width = 1, border_color = color.new(#673ab7, 55)) : table(na)
+var table dash = showDash ? table.new(f_dashPos(), 2, 10, bgcolor = color.new(#0d0d10, 8), border_width = 1, border_color = color.new(#673ab7, 55)) : table(na)
 if showDash and barstate.islast
     // brand states: neon green good · amber forming · red blocked/over ·
     // cyan info · purple structure · gray off
@@ -1311,6 +1345,9 @@ if showDash and barstate.islast
             zNear := math.min(zNear, dEdge)
         imbTxt := "▲" + str.tostring(zB) + " · ▼" + str.tostring(zS) + " · " + (zNear == 0 ? "INSIDE" : str.tostring(zNear, format.mintick))
     f_row(dash, 6, "IMB", imbTxt, not enImb or imbLo.size() == 0 ? offC : f_inZone(close) != 0 ? warnC : infC)
-    f_row(dash, 7, "SIGNALS", str.tostring(sigCnt) + "/" + str.tostring(inMaxSig) + (sigCnt >= inMaxSig ? (inHardCap ? " DONE" : " ≥PLAN") : ""), sigCnt >= inMaxSig ? badC : okC)
+    // the hour read — where the ledger says the money lives vs bleeds
+    string ckTxt = inPrime ? "PRIME" : inCold ? "COLD" : "NEUTRAL"
+    f_row(dash, 7, "CLOCK", ckTxt, inPrime ? okC : inCold ? badC : offC)
+    f_row(dash, 8, "SIGNALS", str.tostring(sigCnt) + "/" + str.tostring(inMaxSig) + (sigCnt >= inMaxSig ? (inHardCap ? " DONE" : " ≥PLAN") : ""), sigCnt >= inMaxSig ? badC : okC)
     string fTxt = htfMode ? "map only" : useLunch and inLunch ? "LUNCH" : not inRTH ? "OFF-SESSION" : "CLEAR"
-    f_row(dash, 8, "FILTER", fTxt, fTxt == "CLEAR" ? okC : fTxt == "map only" ? strC : badC)
+    f_row(dash, 9, "FILTER", fTxt, fTxt == "CLEAR" ? okC : fTxt == "map only" ? strC : badC)
