@@ -2,6 +2,20 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  SKULD UNIFIED v2 — one indicator, self-switching by chart timeframe.
 //
+//  v2.5 (2026-08-06): ALL SESSIONS — Tokyo · London · NY are first-class.
+//   · Per-session VWAP + σ bands: reset at each session open, live in every
+//     session (the extension-zone reference finally exists off-NY).
+//   · Per-session Initial Balance: the first N minutes (input, 60) of
+//     WHICHEVER session just opened. IB play, IB row and the day-type IB
+//     component now work in all three sessions.
+//   · Signal pools use the LIVE session's H/L (sesH/sesL, rank 8) instead of
+//     the NY-only day extremes.
+//   · Sessions-only signal window (default ON, per the trader's ask): the
+//     16:00-18:00 ET settlement gap pauses signals; Tokyo open resumes them.
+//   · The trading day starts at the Tokyo open (18:00 ET): signal counter
+//     and plan drawings reset there, not at the NY open.
+//   · SESSION row + inputs say TOKYO; level prefixes stay "AS" (journal OCR
+//     and level-name history key off them).
 //  v2.4.2 (2026-07-30): REACT prints as a percent ("REACT 11% ✗") on the
 //     label and the row — the score is the share of possible defense
 //     evidence at the touch. The feed keeps the raw number (score=11).
@@ -143,11 +157,11 @@ string inModeTf = input.timeframe("60", "Structure mode at/above TF", group = GM
 int inTgtT  = input.int(0, "Target ticks (0 = auto: 32 NQ / 8 ES)", minval = 0, group = GM)
 int inStopT = input.int(0, "Stop ticks (0 = auto: 48 NQ / 12 ES)", minval = 0, group = GM)
 
-string rthSess   = input.session("0930-1600", "NY RTH (VWAP reset · signal window · NY profile)", group = GS)
-string ibSess    = input.session("0930-1030", "Initial balance window", group = GS)
+string rthSess   = input.session("0930-1600", "NY session (ET)", group = GS)
+int    inIbMin   = input.int(60, "Initial balance: minutes from EACH session open", minval = 15, maxval = 120, group = GS, tooltip = "Every session (Tokyo, London, NY) builds its own IB over its first N minutes. IB play, IB row and the day-type IB read follow the active session.")
 string onSess    = input.session("1800-0930", "Overnight (ONH/ONL)", group = GS)
-string sAsia     = input.session("1800-0300", "Asia session profile", group = GS)
-string sLdn      = input.session("0300-0930", "London session profile", group = GS)
+string sAsia     = input.session("1800-0300", "Tokyo session (ET window · levels keep the AS prefix)", group = GS)
+string sLdn      = input.session("0300-0930", "London session (ET)", group = GS)
 
 int    inRows  = input.int(24, "Extraction rows per profile", minval = 6, maxval = 60, group = GP)
 float  inVA    = input.float(70, "Value area %", minval = 50, maxval = 95, group = GP)
@@ -191,7 +205,7 @@ bool  useVolMR = input.bool(false, "Require volume ≥ × avg (footprint proxy)"
 float volKMR   = input.float(1.2, "Volume multiple", step = 0.1, group = GR)
 bool  inclVwap = input.bool(true, "Include VWAP (rank 10)", group = GR)
 bool  inclSd2  = input.bool(true, "Include ±2σ (rank 6)", group = GR)
-bool  inclDay  = input.bool(true, "Include session day H/L (rank 8)", group = GR)
+bool  inclDay  = input.bool(true, "Include live session H/L (rank 8)", group = GR)
 bool  inclON   = input.bool(true, "Include ONH/ONL (rank 6)", group = GR)
 
 bool  enBRT     = input.bool(false, "Enable BRT play (break-retest)", group = GB, tooltip = "OFF by default — IB + MR only.")
@@ -208,7 +222,8 @@ bool  inAppDyn     = input.bool(true, "Include dynamic levels (VWAP · day H/L �
 
 int  inMaxSig = input.int(3, "Max signals per day (3-trade rule)", minval = 1, maxval = 10, group = GT)
 bool inHardCap = input.bool(false, "Hard-stop signals at max", group = GT, tooltip = "ON = indicator stops firing after max (plan: 'indicator stops signaling after 3 fires'). OFF = counter keeps counting, signals keep coming — display-only discipline.")
-bool inRthOnly = input.bool(false, "Signals only in NY RTH", group = GT, tooltip = "OFF = signals also fire overnight/Globex sessions.")
+bool inRthOnly = input.bool(false, "Signals only in NY RTH", group = GT, tooltip = "OFF = signals also fire in Tokyo and London.")
+bool inSessOnly = input.bool(true, "Signals only during sessions (pause 16:00-18:00 ET)", group = GT, tooltip = "Tokyo, London and NY each start and stop the engine at their open and close. The settlement gap between the NY close and the Tokyo open fires nothing.")
 int  inCd     = input.int(5, "Cooldown bars between signals", minval = 0, group = GT)
 bool useLunch = input.bool(false, "Lunch blackout", group = GT)
 string lunchSess = input.session("1130-1330", "Lunch window (ET)", group = GT)
@@ -232,7 +247,7 @@ int    dtHysteresis = input.int(2, "Evaluations to confirm a state change", minv
 int    dtOneTfStreak = input.int(4, "One-timeframing: consecutive 15m bars", minval = 2, maxval = 10, group = GY)
 float  dtRangeNY   = input.float(0.60, "Range gate × ADR(10) · NY", minval = 0.1, step = 0.05, group = GY)
 float  dtRangeLDN  = input.float(0.45, "Range gate × ADR(10) · LDN", minval = 0.1, step = 0.05, group = GY)
-float  dtRangeAS   = input.float(0.30, "Range gate × ADR(10) · ASIA", minval = 0.1, step = 0.05, group = GY)
+float  dtRangeAS   = input.float(0.30, "Range gate × ADR(10) · TOKYO", minval = 0.1, step = 0.05, group = GY)
 string dtGateMode  = input.string("OFF", "Play matrix mode", options = ["OFF", "ADVISORY", "ENFORCE"], group = GY, tooltip = "OFF (default) = nothing changes, row is information only. ADVISORY = benched signals still print, dimmed, tagged BENCH. ENFORCE = benched markers suppressed; the ledger feed still fires a BENCHED event so offered counts survive. Matrix: strong trend benches counter-trend reversals and favors break-retest/APP with the move; balance favors reversals and benches break-retest; TRANSITION benches nothing.")
 bool   dtTrendMrException = input.bool(true, "Trend day: allow with-trend reversal at rank ≥ 8 with react ≥ 70", group = GY)
 bool   dtTint      = input.bool(false, "Faint background tint by day type", group = GY)
@@ -330,7 +345,6 @@ float appLoN = ta.lowest(low, inAppNoTouch)
 
 // sessions
 bool inRTH   = not na(time(timeframe.period, rthSess, TZ))
-bool inIBw   = not na(time(timeframe.period, ibSess, TZ))
 bool inON    = not na(time(timeframe.period, onSess, TZ))
 bool inA     = not na(time(timeframe.period, sAsia, TZ))
 bool inL     = not na(time(timeframe.period, sLdn, TZ))
@@ -339,7 +353,17 @@ bool inPrime = not na(time(timeframe.period, primeSess, TZ))
 bool inCold  = not na(time(timeframe.period, coldSess, TZ))
 bool newRTH  = inRTH and not inRTH[1]
 // one session string for the engines AND the dashboard
-string sessNow = inRTH ? "NY" : inL ? "LDN" : inA ? "ASIA" : "OFF"
+string sessNow = inRTH ? "NY" : inL ? "LDN" : inA ? "TOKYO" : "OFF"
+// all-sessions machinery: every session is first-class (v2.5)
+bool inAnySess = inRTH or inL or inA
+bool newSess = inAnySess and sessNow != sessNow[1]
+var int sessStartT = na
+if newSess
+    sessStartT := time
+// the trading day begins at the Tokyo open (18:00 ET)
+bool newTradeDay = newSess and sessNow == "TOKYO"
+// per-session initial balance window: first N minutes of the ACTIVE session
+bool inIBw = inAnySess and not na(sessStartT) and time - sessStartT < inIbMin * 60 * 1000
 
 // ── TYPES & FUNCTIONS ──────────────────────────────────────────────────────
 type Prof
@@ -667,11 +691,9 @@ var int wT0 = na
 var int aT0 = na
 var int lT0 = na
 var int nT0 = na
-// overnight + RTH-day extremes
+// overnight extremes (live session extremes ride sessHi/sessLo)
 var float onHi = na
 var float onLo = na
-var float rHi = na
-var float rLo = na
 // VWAP
 var float sPV = 0.0
 var float sV = 0.0
@@ -835,14 +857,10 @@ if inON
     onHi := math.max(nz(onHi, high), high)
     onLo := math.min(nz(onLo, low), low)
 
-if newRTH
-    rHi := high
-    rLo := low
+// trading-day reset — Tokyo open (18:00 ET) starts the day
+if newTradeDay
     sigCnt := 0
-    sPV := 0.0
-    sV := 0.0
-    sP2 := 0.0
-    // wipe yesterday's trade-plan drawings at the open
+    // wipe yesterday's trade-plan drawings
     if not na(planE)
         line.delete(planE)
         planE := line(na)
@@ -858,20 +876,11 @@ if newRTH
     planOn := false
     planDir := 0
     appFired.clear()
-if inRTH
-    rHi := math.max(nz(rHi, high), high)
-    rLo := math.min(nz(rLo, low), low)
-    sPV += hlc3 * nz(volume)
-    sV += nz(volume)
-    sP2 += hlc3 * hlc3 * nz(volume)
-float vwapV = inRTH and sV > 0 ? sPV / sV : na
-float sd = inRTH and sV > 0 ? math.sqrt(math.max(sP2 / sV - vwapV * vwapV, 0.0)) : na
-float up1 = vwapV + sd
-float dn1 = vwapV - sd
-float up2 = vwapV + 2 * sd
-float dn2 = vwapV - 2 * sd
-
-if inIBw and not inIBw[1]
+// per-session VWAP + IB: every session opens fresh
+if newSess
+    sPV := 0.0
+    sV := 0.0
+    sP2 := 0.0
     ibHi := high
     ibLo := low
     ibDone := false
@@ -879,10 +888,21 @@ if inIBw and not inIBw[1]
     accDn := 0
     firedUp := 0
     firedDn := 0
+if inAnySess
+    sPV += hlc3 * nz(volume)
+    sV += nz(volume)
+    sP2 += hlc3 * hlc3 * nz(volume)
+float vwapV = inAnySess and sV > 0 ? sPV / sV : na
+float sd = inAnySess and sV > 0 ? math.sqrt(math.max(sP2 / sV - vwapV * vwapV, 0.0)) : na
+float up1 = vwapV + sd
+float dn1 = vwapV - sd
+float up2 = vwapV + 2 * sd
+float dn2 = vwapV - 2 * sd
+
 if inIBw
     ibHi := math.max(nz(ibHi, high), high)
     ibLo := math.min(nz(ibLo, low), low)
-if not inIBw and inIBw[1] and not na(ibHi)
+if inAnySess and not inIBw and inIBw[1] and not na(ibHi)
     ibDone := true
 
 // ledger-feed event flags — set on confirmed bars, consumed at the bottom
@@ -1331,10 +1351,10 @@ string fireLvl = ""
 float fireRank = 0.0
 
 if barstate.isconfirmed and not htfMode
-    if inRTH and ibDone and not na(ibHi)
+    if inAnySess and ibDone and not na(ibHi)
         accUp := close > ibHi ? accUp + 1 : 0
         accDn := close < ibLo ? accDn + 1 : 0
-    bool gate = (not inRthOnly or inRTH) and (not useLunch or not inLunch) and (not inHardCap or sigCnt < inMaxSig) and bar_index - lastSigBar >= inCd
+    bool gate = (not inRthOnly or inRTH) and (not inSessOnly or inAnySess) and (not useLunch or not inLunch) and (not inHardCap or sigCnt < inMaxSig) and bar_index - lastSigBar >= inCd
     // IB — the set play (priority)
     if enIB and gate and ibDone and accUp == inAcc and firedUp < inMaxBrk
         sigIBUp := true
@@ -1374,13 +1394,13 @@ if barstate.isconfirmed and not htfMode
             mp.push(dn2)
             mrk.push(6)
             mnm.push("-2σ")
-        if inclDay and not na(rHi[1]) and 8 >= inMinRank
-            mp.push(rHi[1])
+        if inclDay and not na(sessHi[1]) and 8 >= inMinRank
+            mp.push(sessHi[1])
             mrk.push(8)
-            mnm.push("dayH")
-            mp.push(rLo[1])
+            mnm.push("sesH")
+            mp.push(sessLo[1])
             mrk.push(8)
-            mnm.push("dayL")
+            mnm.push("sesL")
         if inclON and not na(onHi) and 6 >= inMinRank
             mp.push(onHi)
             mrk.push(6)
@@ -1475,13 +1495,13 @@ if barstate.isconfirmed and not htfMode
                 ap.push(vwapV)
                 ark.push(10)
                 anm.push("VWAP")
-            if not na(rHi[1]) and 8 >= inAppRank
-                ap.push(rHi[1])
+            if not na(sessHi[1]) and 8 >= inAppRank
+                ap.push(sessHi[1])
                 ark.push(8)
-                anm.push("dayH")
-                ap.push(rLo[1])
+                anm.push("sesH")
+                ap.push(sessLo[1])
                 ark.push(8)
-                anm.push("dayL")
+                anm.push("sesL")
             float tDPoc2 = devDPoc[1]
             if not na(tDPoc2) and 8 >= inAppRank
                 ap.push(tDPoc2)
@@ -1640,7 +1660,7 @@ if barstate.isconfirmed and not htfMode
             bool win = tpHit and not slHit
             string resTxt = slHit and tpHit ? "TP+SL same bar — check" : win ? "TP ✓ +" + str.tostring(tgtT) + "t" : "SL ✗ -" + str.tostring(stopT) + "t"
             planRes := label.new(time, win ? planTp : planSp, resTxt, xloc = xloc.bar_time, style = win ? label.style_label_up : label.style_label_down, color = color.new(win ? colUp : colStop, 20), textcolor = win ? color.black : color.white, size = size.small)
-        else if not inRTH
+        else if not inAnySess
             planOn := false
 
 // ── PLOTS ──────────────────────────────────────────────────────────────────
@@ -1777,7 +1797,7 @@ if showDash and barstate.islast
     color strC  = #673ab7
     f_row(dash, 0, "MODE", htfMode ? "STRUCTURE ≥" + inModeTf : "EXECUTION <" + inModeTf, htfMode ? strC : okC)
     f_row(dash, 1, "TUNE", (isES ? "ES" : "NQ") + " T " + str.tostring(tgtT) + "t · S " + str.tostring(stopT) + "t · W " + str.tostring(clustW, format.mintick), offC)
-    f_row(dash, 2, "SESSION", sessNow, inRTH ? okC : offC)
+    f_row(dash, 2, "SESSION", sessNow, inAnySess ? okC : offC)
     // the market-condition read: which playbook is live
     string dtTxt = not dtOn ? "—" : dtState + " · T" + (dtT >= 0 ? "+" : "") + str.tostring(dtT) + (dtGateOK ? "" : " · thin")
     color dtCol = not dtOn ? offC : dtState == "TREND▲" ? okC : dtState == "TREND▼" ? badC : dtState == "BALANCE" ? infC : offC
