@@ -163,10 +163,32 @@ struct ContentView: View {
     private var content: some View {
         if let fatal = store.fatalError {
             FatalErrorPanel(message: fatal)
-        } else if store.session == nil {
-            SetupView()
-        } else {
+        } else if store.session != nil {
             sessionShell
+        } else if store.composingSession {
+            // setup runs full-screen with a way back to the Hub
+            ZStack(alignment: .topLeading) {
+                SetupView()
+                Button {
+                    store.composingSession = false
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("Sessions")
+                            .font(Theme.monoSmall)
+                    }
+                    .foregroundStyle(Theme.textDim)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Theme.card))
+                    .overlay(Capsule().stroke(Theme.cardBorder))
+                }
+                .buttonStyle(.plain)
+                .padding(12)
+            }
+        } else {
+            SessionHubView(newNamed: { showNewSession = true })
         }
     }
 
@@ -264,6 +286,133 @@ struct ContentView: View {
 
     private static func usd(_ value: Double) -> String {
         String(format: "$%.0f", max(0, value))
+    }
+}
+
+// MARK: - Session Hub (the home screen — CRUD-simple)
+
+/// Where the app lands with no active session: today's action up top, every
+/// session below as a clickable card. End Session brings you here.
+private struct SessionHubView: View {
+    @EnvironmentObject private var store: SessionStore
+    let newNamed: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("SESSIONS")
+                        .font(.system(.title3, design: .monospaced).weight(.bold))
+                        .foregroundStyle(Theme.text)
+                        .kerning(2)
+                    Text("Pick one, reopen one, or start fresh. Everything is kept.")
+                        .font(Theme.monoSmall)
+                        .foregroundStyle(Theme.textDim)
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        store.composingSession = true
+                    } label: {
+                        Label("Start today's session", systemImage: "sunrise")
+                            .font(Theme.mono)
+                            .foregroundStyle(Theme.bg)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 9)
+                            .background(Capsule().fill(Theme.green))
+                    }
+                    .buttonStyle(.plain)
+                    Button {
+                        newNamed()
+                    } label: {
+                        Label("New named session", systemImage: "folder.badge.plus")
+                            .font(Theme.mono)
+                            .foregroundStyle(Theme.purple)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 9)
+                            .background(Capsule().fill(Theme.purple.opacity(0.12)))
+                            .overlay(Capsule().stroke(Theme.purple.opacity(0.6)))
+                    }
+                    .buttonStyle(.plain)
+                    .help("A dedicated workspace — e.g. LEAP tournament")
+                }
+
+                if store.allSessions.isEmpty {
+                    Text("No sessions yet — start today's and post the first chart.")
+                        .font(Theme.monoSmall)
+                        .foregroundStyle(Theme.textDim)
+                        .padding(.top, 20)
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 10)], spacing: 10) {
+                        ForEach(store.allSessions) { s in
+                            SessionCard(
+                                session: s,
+                                net: store.sessionNets[s.id] ?? 0
+                            ) {
+                                store.selectSession(id: s.id)
+                            } reopen: {
+                                store.reopenSession(id: s.id)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 900)
+            .frame(maxWidth: .infinity)
+        }
+        .background(Theme.bg)
+    }
+}
+
+private struct SessionCard: View {
+    let session: SessionRecord
+    let net: Double
+    let open: () -> Void
+    let reopen: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(session.status == "open" ? Theme.green : Theme.textDim)
+                        .frame(width: 7, height: 7)
+                    Text(session.name ?? session.instrument)
+                        .font(Theme.mono.weight(.semibold))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(session.status == "open" ? "LIVE" : "CLOSED")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(session.status == "open" ? Theme.green : Theme.textDim)
+                }
+                HStack(spacing: 8) {
+                    Text(session.date)
+                        .font(Theme.monoSmall)
+                        .foregroundStyle(Theme.textDim)
+                    Text(session.instrument)
+                        .font(Theme.monoSmall)
+                        .foregroundStyle(Theme.cyan)
+                    Spacer(minLength: 4)
+                    Text((net < 0 ? "-$" : "+$") + String(format: "%.0f", abs(net)))
+                        .font(Theme.monoSmall.weight(.semibold))
+                        .foregroundStyle(net > 0 ? Theme.green : (net < 0 ? Theme.red : Theme.textDim))
+                }
+                if session.status == "done" {
+                    Button("Reopen") { reopen() }
+                        .buttonStyle(.plain)
+                        .font(Theme.monoSmall)
+                        .foregroundStyle(Theme.amber)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Theme.card))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.cardBorder))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
     }
 }
 

@@ -70,6 +70,8 @@ final class SessionStore: ObservableObject {
     /// Non-nil = the user is working INSIDE a picked session (maybe a past
     /// day, maybe a named workspace) — day rollover must not yank them out.
     @Published private(set) var pinnedSessionId: String?
+    /// True while the setup screen is composing a new session (Hub -> Setup).
+    @Published var composingSession = false
     /// Entry ids with a mentor call in flight ("thinking..." on the card).
     @Published private(set) var mentorBusy: Set<String> = []
     @Published var errorMessage: String? {
@@ -137,7 +139,10 @@ final class SessionStore: ObservableObject {
         do {
             let database = try AppDatabase.open()
             db = database
-            session = try database.fetchSession(date: todayDate)
+            // auto-enter only a LIVE session; an ended one means the user
+            // left deliberately — land on the Hub instead
+            let todays = try database.fetchSession(date: todayDate)
+            session = todays?.status == "open" ? todays : nil
             mentor = MentorService(repoRoot: Workspace.root)
             mentorAvailable = MentorService.locateCLI() != nil
             reloadAll()
@@ -180,7 +185,8 @@ final class SessionStore: ObservableObject {
         Workspace.ensureDayFolders(current)
         pendingScreenshots = []
         if pinnedSessionId == nil {
-            session = (try? db?.fetchSession(date: current)) ?? nil
+            let todays = (try? db?.fetchSession(date: current)) ?? nil
+            session = todays?.status == "open" ? todays : nil
             reloadAll()
         }
         startWatcher()
@@ -203,10 +209,12 @@ final class SessionStore: ObservableObject {
         reloadAll()
     }
 
-    /// Back to the live day.
+    /// Back to the live day (Hub when today has no open session).
     func selectToday() {
         pinnedSessionId = nil
-        session = (try? db?.fetchSession(date: todayDate)) ?? nil
+        composingSession = false
+        let todays = (try? db?.fetchSession(date: todayDate)) ?? nil
+        session = todays?.status == "open" ? todays : nil
         reloadAll()
     }
 
@@ -399,7 +407,9 @@ final class SessionStore: ObservableObject {
             try db.save(s)
             try db.saveLevels(levelRecords)
             session = s
+            composingSession = false
             reloadAll()
+            refreshSessionList()
             // Chart levels flow in immediately if TV is up.
             syncLevelsFromChart(manual: false)
         } catch {
@@ -407,16 +417,18 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    /// Ends the CURRENT session. Deliberately does nothing else — no sync,
-    /// no report, no timers — so it can never hang. Level auto-sync skips
-    /// done sessions on its own.
+    /// Ends the CURRENT session and returns to the Session Hub. One DB
+    /// write, one navigation — nothing that can hang.
     func endSession() {
         guard let db, var s = session else { return }
         s.status = "done"
         do {
             try db.save(s)
-            session = s
+            session = nil
+            pinnedSessionId = nil
+            composingSession = false
             refreshSessionList()
+            reloadAll()
         } catch {
             errorMessage = "Failed to end session: \(error.localizedDescription)"
         }
