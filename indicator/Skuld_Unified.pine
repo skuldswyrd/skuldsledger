@@ -2,7 +2,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  SKULD UNIFIED v2 — one indicator, self-switching by chart timeframe.
 //
-//  v2.5 (2026-08-06): ALL SESSIONS — Tokyo · London · NY are first-class.
+//  v2.5 (2026-08-06): ALL SESSIONS — Asia · London · NY are first-class.
 //   · Per-session VWAP + σ bands: reset at each session open, live in every
 //     session (the extension-zone reference finally exists off-NY).
 //   · Per-session Initial Balance: the first N minutes (input, 60) of
@@ -11,10 +11,10 @@
 //   · Signal pools use the LIVE session's H/L (sesH/sesL, rank 8) instead of
 //     the NY-only day extremes.
 //   · Sessions-only signal window (default ON, per the trader's ask): the
-//     16:00-18:00 ET settlement gap pauses signals; Tokyo open resumes them.
-//   · The trading day starts at the Tokyo open (18:00 ET): signal counter
+//     16:00-18:00 ET settlement gap pauses signals; Asia open resumes them.
+//   · The trading day starts at the Asia open (18:00 ET): signal counter
 //     and plan drawings reset there, not at the NY open.
-//   · SESSION row + inputs say TOKYO; level prefixes stay "AS" (journal OCR
+//   · Session naming stays ASIA everywhere (his call).
 //     and level-name history key off them).
 //  v2.4.2 (2026-07-30): REACT prints as a percent ("REACT 11% ✗") on the
 //     label and the row — the score is the share of possible defense
@@ -158,9 +158,9 @@ int inTgtT  = input.int(0, "Target ticks (0 = auto: 32 NQ / 8 ES)", minval = 0, 
 int inStopT = input.int(0, "Stop ticks (0 = auto: 48 NQ / 12 ES)", minval = 0, group = GM)
 
 string rthSess   = input.session("0930-1600", "NY session (ET)", group = GS)
-int    inIbMin   = input.int(60, "Initial balance: minutes from EACH session open", minval = 15, maxval = 120, group = GS, tooltip = "Every session (Tokyo, London, NY) builds its own IB over its first N minutes. IB play, IB row and the day-type IB read follow the active session.")
+int    inIbMin   = input.int(60, "Initial balance: minutes from EACH session open", minval = 15, maxval = 120, group = GS, tooltip = "Every session (Asia, London, NY) builds its own IB over its first N minutes. IB play, IB row and the day-type IB read follow the active session.")
 string onSess    = input.session("1800-0930", "Overnight (ONH/ONL)", group = GS)
-string sAsia     = input.session("1800-0300", "Tokyo session (ET window · levels keep the AS prefix)", group = GS)
+string sAsia     = input.session("1800-0300", "Asia session (ET)", group = GS)
 string sLdn      = input.session("0300-0930", "London session (ET)", group = GS)
 
 int    inRows  = input.int(24, "Extraction rows per profile", minval = 6, maxval = 60, group = GP)
@@ -222,8 +222,8 @@ bool  inAppDyn     = input.bool(true, "Include dynamic levels (VWAP · day H/L �
 
 int  inMaxSig = input.int(3, "Max signals per day (3-trade rule)", minval = 1, maxval = 10, group = GT)
 bool inHardCap = input.bool(false, "Hard-stop signals at max", group = GT, tooltip = "ON = indicator stops firing after max (plan: 'indicator stops signaling after 3 fires'). OFF = counter keeps counting, signals keep coming — display-only discipline.")
-bool inRthOnly = input.bool(false, "Signals only in NY RTH", group = GT, tooltip = "OFF = signals also fire in Tokyo and London.")
-bool inSessOnly = input.bool(true, "Signals only during sessions (pause 16:00-18:00 ET)", group = GT, tooltip = "Tokyo, London and NY each start and stop the engine at their open and close. The settlement gap between the NY close and the Tokyo open fires nothing.")
+bool inRthOnly = input.bool(false, "Signals only in NY RTH", group = GT, tooltip = "OFF = signals also fire in Asia and London.")
+bool inSessOnly = input.bool(true, "Signals only during sessions (pause 16:00-18:00 ET)", group = GT, tooltip = "Asia, London and NY each start and stop the engine at their open and close. The settlement gap between the NY close and the Asia open fires nothing.")
 int  inCd     = input.int(5, "Cooldown bars between signals", minval = 0, group = GT)
 bool useLunch = input.bool(false, "Lunch blackout", group = GT)
 string lunchSess = input.session("1130-1330", "Lunch window (ET)", group = GT)
@@ -247,7 +247,7 @@ int    dtHysteresis = input.int(2, "Evaluations to confirm a state change", minv
 int    dtOneTfStreak = input.int(4, "One-timeframing: consecutive 15m bars", minval = 2, maxval = 10, group = GY)
 float  dtRangeNY   = input.float(0.60, "Range gate × ADR(10) · NY", minval = 0.1, step = 0.05, group = GY)
 float  dtRangeLDN  = input.float(0.45, "Range gate × ADR(10) · LDN", minval = 0.1, step = 0.05, group = GY)
-float  dtRangeAS   = input.float(0.30, "Range gate × ADR(10) · TOKYO", minval = 0.1, step = 0.05, group = GY)
+float  dtRangeAS   = input.float(0.30, "Range gate × ADR(10) · ASIA", minval = 0.1, step = 0.05, group = GY)
 string dtGateMode  = input.string("OFF", "Play matrix mode", options = ["OFF", "ADVISORY", "ENFORCE"], group = GY, tooltip = "OFF (default) = nothing changes, row is information only. ADVISORY = benched signals still print, dimmed, tagged BENCH. ENFORCE = benched markers suppressed; the ledger feed still fires a BENCHED event so offered counts survive. Matrix: strong trend benches counter-trend reversals and favors break-retest/APP with the move; balance favors reversals and benches break-retest; TRANSITION benches nothing.")
 bool   dtTrendMrException = input.bool(true, "Trend day: allow with-trend reversal at rank ≥ 8 with react ≥ 70", group = GY)
 bool   dtTint      = input.bool(false, "Faint background tint by day type", group = GY)
@@ -353,15 +353,15 @@ bool inPrime = not na(time(timeframe.period, primeSess, TZ))
 bool inCold  = not na(time(timeframe.period, coldSess, TZ))
 bool newRTH  = inRTH and not inRTH[1]
 // one session string for the engines AND the dashboard
-string sessNow = inRTH ? "NY" : inL ? "LDN" : inA ? "TOKYO" : "OFF"
+string sessNow = inRTH ? "NY" : inL ? "LDN" : inA ? "ASIA" : "OFF"
 // all-sessions machinery: every session is first-class (v2.5)
 bool inAnySess = inRTH or inL or inA
 bool newSess = inAnySess and sessNow != sessNow[1]
 var int sessStartT = na
 if newSess
     sessStartT := time
-// the trading day begins at the Tokyo open (18:00 ET)
-bool newTradeDay = newSess and sessNow == "TOKYO"
+// the trading day begins at the Asia open (18:00 ET)
+bool newTradeDay = newSess and sessNow == "ASIA"
 // per-session initial balance window: first N minutes of the ACTIVE session
 bool inIBw = inAnySess and not na(sessStartT) and time - sessStartT < inIbMin * 60 * 1000
 
@@ -857,7 +857,7 @@ if inON
     onHi := math.max(nz(onHi, high), high)
     onLo := math.min(nz(onLo, low), low)
 
-// trading-day reset — Tokyo open (18:00 ET) starts the day
+// trading-day reset — Asia open (18:00 ET) starts the day
 if newTradeDay
     sigCnt := 0
     // wipe yesterday's trade-plan drawings
