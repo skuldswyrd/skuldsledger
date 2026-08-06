@@ -11,12 +11,35 @@ struct SessionRecord: Codable, Identifiable, Equatable, FetchableRecord, Persist
 
     var id: String
     var date: String                 // YYYY-MM-DD (ET)
-    var instrument: String           // NQ/MNQ/ES/MES
+    var instrument: String           // NQ/MNQ/ES/MES/CL/GC/MBT
     var ibHigh: Double?
     var ibLow: Double?
     var tradesTaken: Int
     var status: String               // "open" / "done"
     var createdAt: String            // ISO8601
+    /// Optional label ("LEAP tournament") — named workspaces are findable
+    /// and reopenable in the session browser.
+    var name: String?
+
+    init(id: String, date: String, instrument: String, ibHigh: Double?,
+         ibLow: Double?, tradesTaken: Int, status: String, createdAt: String,
+         name: String? = nil) {
+        self.id = id
+        self.date = date
+        self.instrument = instrument
+        self.ibHigh = ibHigh
+        self.ibLow = ibLow
+        self.tradesTaken = tradesTaken
+        self.status = status
+        self.createdAt = createdAt
+        self.name = name
+    }
+
+    /// "08-06 · LEAP tournament" — browser display.
+    var displayTitle: String {
+        let short = String(date.dropFirst(5))
+        return name.map { "\(short) · \($0)" } ?? "\(short) · \(instrument)"
+    }
 }
 
 struct LevelRecord: Codable, Identifiable, Equatable, FetchableRecord, PersistableRecord {

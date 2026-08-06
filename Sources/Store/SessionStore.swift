@@ -64,6 +64,12 @@ final class SessionStore: ObservableObject {
     @Published private(set) var settings: UserSettings = UserSettings()
     @Published private(set) var pendingScreenshots: [URL] = []
     @Published private(set) var stats: SessionStats = .empty
+    /// Session browser: every session, newest first, with net badges.
+    @Published private(set) var allSessions: [SessionRecord] = []
+    @Published private(set) var sessionNets: [String: Double] = [:]
+    /// Non-nil = the user is working INSIDE a picked session (maybe a past
+    /// day, maybe a named workspace) — day rollover must not yank them out.
+    @Published private(set) var pinnedSessionId: String?
     /// Entry ids with a mentor call in flight ("thinking..." on the card).
     @Published private(set) var mentorBusy: Set<String> = []
     @Published var errorMessage: String? {
@@ -135,6 +141,7 @@ final class SessionStore: ObservableObject {
             mentor = MentorService(repoRoot: Workspace.root)
             mentorAvailable = MentorService.locateCLI() != nil
             reloadAll()
+            refreshSessionList()
             startWatcher()
             startTimers()
             Task { await self.refreshTVStatus() }
@@ -163,16 +170,96 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    /// App left open overnight must not journal under yesterday's date.
+    /// App left open overnight must not journal under yesterday's date —
+    /// unless the user deliberately pinned a session (named workspace or a
+    /// past day they're reviewing); then the pin wins.
     func refreshDayIfNeeded() {
         let current = Workspace.todayString()
         guard current != todayDate else { return }
         todayDate = current
         Workspace.ensureDayFolders(current)
         pendingScreenshots = []
-        session = (try? db?.fetchSession(date: current)) ?? nil
-        reloadAll()
+        if pinnedSessionId == nil {
+            session = (try? db?.fetchSession(date: current)) ?? nil
+            reloadAll()
+        }
         startWatcher()
+    }
+
+    // MARK: - Session browser (pick · pin · name · reopen)
+
+    func refreshSessionList() {
+        guard let db else { return }
+        allSessions = (try? db.allSessions()) ?? []
+        sessionNets = (try? db.sessionNets()) ?? [:]
+    }
+
+    /// Load any session into the feed. Selecting today's natural session
+    /// clears the pin; anything else pins.
+    func selectSession(id: String) {
+        guard let db, let s = (try? db.fetchSession(id: id)) ?? nil else { return }
+        session = s
+        pinnedSessionId = s.date == todayDate && s.name == nil ? nil : s.id
+        reloadAll()
+    }
+
+    /// Back to the live day.
+    func selectToday() {
+        pinnedSessionId = nil
+        session = (try? db?.fetchSession(date: todayDate)) ?? nil
+        reloadAll()
+    }
+
+    /// Dedicated workspace ("LEAP tournament"): its own session, named,
+    /// reopenable any day — trades, posts and mentor thinking all live in it.
+    func createNamedSession(name: String, instrument: Instrument) {
+        guard let db else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let s = SessionRecord(
+            id: UUID().uuidString,
+            date: todayDate,
+            instrument: instrument.rawValue,
+            ibHigh: nil,
+            ibLow: nil,
+            tradesTaken: 0,
+            status: "open",
+            createdAt: Workspace.isoNow(),
+            name: trimmed.isEmpty ? nil : trimmed)
+        do {
+            try db.save(s)
+            session = s
+            pinnedSessionId = s.id
+            reloadAll()
+            refreshSessionList()
+        } catch {
+            errorMessage = "Could not create session: \(error.localizedDescription)"
+        }
+    }
+
+    func renameSession(id: String, to name: String) {
+        guard let db, var s = (try? db.fetchSession(id: id)) ?? nil else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        s.name = trimmed.isEmpty ? nil : trimmed
+        do {
+            try db.save(s)
+            if session?.id == id { session = s }
+            refreshSessionList()
+        } catch {
+            errorMessage = "Rename failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Closed is never locked — reopen and keep working.
+    func reopenSession(id: String) {
+        guard let db, var s = (try? db.fetchSession(id: id)) ?? nil else { return }
+        s.status = "open"
+        do {
+            try db.save(s)
+            selectSession(id: id)
+            refreshSessionList()
+        } catch {
+            errorMessage = "Reopen failed: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - TradingView status
@@ -320,12 +407,16 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Ends the CURRENT session. Deliberately does nothing else — no sync,
+    /// no report, no timers — so it can never hang. Level auto-sync skips
+    /// done sessions on its own.
     func endSession() {
         guard let db, var s = session else { return }
         s.status = "done"
         do {
             try db.save(s)
             session = s
+            refreshSessionList()
         } catch {
             errorMessage = "Failed to end session: \(error.localizedDescription)"
         }
@@ -916,6 +1007,9 @@ final class SessionStore: ObservableObject {
     /// posted SCREENSHOT — levels work even with the bridge down.
     func syncLevelsFromChart(manual: Bool) {
         guard let s = session, !levelSyncBusy else { return }
+        // done sessions don't need the 5-minute OCR walk churning away —
+        // background work on a closed session was pure heat
+        if !manual && s.status != "open" { return }
         levelSyncBusy = true
         // Recent posted screenshots, newest first — footprint-only shots can
         // hide the labels, so OCR walks back until one reads clean.
@@ -1063,6 +1157,7 @@ final class SessionStore: ObservableObject {
         chops = (try? db.chops(sessionId: s.id)) ?? []
         comments = (try? db.comments(sessionId: s.id)) ?? [:]
         stats = (try? StatsQueries.compute(db: db, session: s, levels: levels, plan: plan)) ?? .empty
+        refreshSessionList()
     }
 
     private func nilIfEmpty(_ s: String) -> String? {

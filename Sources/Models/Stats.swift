@@ -34,6 +34,8 @@ struct SessionStats: Equatable {
     var maxTrades: Int = 3
     /// P&L split by instrument — he trades NQ and ES in the same day now.
     var instrumentRows: [InstrumentRow] = []
+    /// P&L split by market session (ASIA/LDN/NY) — all-sessions trading.
+    var marketRows: [InstrumentRow] = []
 
     var netTicks: Double = 0
     var netUsd: Double = 0

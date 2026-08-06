@@ -1,22 +1,36 @@
 import Foundation
 
-/// ET session buckets for the time-of-day cross filter.
+/// ET buckets matching the trading sessions the whole system runs on —
+/// Asia and London whole, NY split the way the ledger's hours split.
 enum SessionBucket: String, CaseIterable, Identifiable {
-    case globex = "GLOBEX"      // 00:00–09:30 ET (overnight + premarket)
-    case morning = "AM"         // 09:30–11:30
+    case asia = "ASIA"          // 18:00–03:00 ET
+    case ldn = "LDN"            // 03:00–09:30
+    case nyAM = "NY-AM"         // 09:30–11:30
     case lunch = "LUNCH"        // 11:30–13:30
-    case afternoon = "PM"       // 13:30–16:00
-    case post = "POST"          // 16:00–24:00
+    case nyPM = "NY-PM"         // 13:30–16:00
+    case off = "OFF"            // 16:00–18:00 settlement gap
 
     var id: String { rawValue }
 
     static func bucket(forMinutesET m: Int) -> SessionBucket {
         switch m {
-        case ..<570: return .globex          // < 09:30
-        case ..<690: return .morning         // < 11:30
+        case ..<180: return .asia            // < 03:00
+        case ..<570: return .ldn             // < 09:30
+        case ..<690: return .nyAM            // < 11:30
         case ..<810: return .lunch           // < 13:30
-        case ..<960: return .afternoon      // < 16:00
-        default: return .post
+        case ..<960: return .nyPM            // < 16:00
+        case ..<1080: return .off            // < 18:00
+        default: return .asia
+        }
+    }
+
+    /// Coarse three-way market session for the live sidebar.
+    var market: String {
+        switch self {
+        case .asia: return "ASIA"
+        case .ldn: return "LDN"
+        case .nyAM, .lunch, .nyPM: return "NY"
+        case .off: return "OFF"
         }
     }
 }

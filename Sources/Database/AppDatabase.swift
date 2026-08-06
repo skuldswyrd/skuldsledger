@@ -132,6 +132,12 @@ final class AppDatabase {
                 """)
         }
 
+        // Named sessions: a session can carry a label ("LEAP tournament") so
+        // dedicated workspaces are findable and reopenable.
+        migrator.registerMigration("v4") { db in
+            try db.execute(sql: "ALTER TABLE sessions ADD COLUMN name TEXT;")
+        }
+
         return migrator
     }
 
@@ -157,6 +163,41 @@ final class AppDatabase {
                 .order(Column("created_at").desc)
                 .fetchOne(db)
         }
+    }
+
+    func fetchSession(id: String) throws -> SessionRecord? {
+        try dbQueue.read { db in
+            try SessionRecord.filter(Column("id") == id).fetchOne(db)
+        }
+    }
+
+    /// Every session, newest first — the session browser's list.
+    func allSessions() throws -> [SessionRecord] {
+        try dbQueue.read { db in
+            try SessionRecord
+                .order(Column("date").desc, Column("created_at").desc)
+                .fetchAll(db)
+        }
+    }
+
+    /// Net USD per session id (closed trades) — badges for the browser.
+    func sessionNets() throws -> [String: Double] {
+        let rows = try dbQueue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT sessions.id AS sid, COALESCE(SUM(trades.usd_result), 0.0) AS net
+                    FROM sessions
+                    LEFT JOIN entries ON entries.session_id = sessions.id
+                    LEFT JOIN trades ON trades.entry_id = entries.id
+                    GROUP BY sessions.id
+                    """)
+        }
+        var out: [String: Double] = [:]
+        for row in rows {
+            out[row["sid"]] = row["net"]
+        }
+        return out
     }
 
     // MARK: - Levels

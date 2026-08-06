@@ -87,6 +87,31 @@ enum StatsQueries {
         stats.instrumentRows = instrumentBuckets.values
             .sorted { abs($0.netUsd) > abs($1.netUsd) }
 
+        // Market-session split (ASIA/LDN/NY) — the trading day spans all
+        // three now. Clock = broker entry time when imported, post time else.
+        let isoParser = ISO8601DateFormatter()
+        isoParser.formatOptions = [.withInternetDateTime]
+        var etCal = Calendar(identifier: .gregorian)
+        etCal.timeZone = Workspace.eastern
+        let entryTsById = Dictionary(entries.map { ($0.id, $0.ts) },
+                                     uniquingKeysWith: { first, _ in first })
+        var marketBuckets: [String: SessionStats.InstrumentRow] = [:]
+        for trade in trades {
+            let clockISO = trade.entryTime ?? entryTsById[trade.entryId] ?? ""
+            guard let clock = isoParser.date(from: clockISO) else { continue }
+            let comps = etCal.dateComponents([.hour, .minute], from: clock)
+            let minutes = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+            let market = SessionBucket.bucket(forMinutesET: minutes).market
+            var row = marketBuckets[market]
+                ?? SessionStats.InstrumentRow(instrument: market, trades: 0,
+                                              netTicks: 0, netUsd: 0)
+            row.trades += 1
+            if let ticks = trade.ticksResult { row.netTicks += ticks }
+            if let usd = trade.usdResult { row.netUsd += usd }
+            marketBuckets[market] = row
+        }
+        stats.marketRows = ["ASIA", "LDN", "NY", "OFF"].compactMap { marketBuckets[$0] }
+
         // Entry counts per action — feeds "signals offered vs taken".
         var actionCounts: [String: Int] = [:]
         for entry in entries {

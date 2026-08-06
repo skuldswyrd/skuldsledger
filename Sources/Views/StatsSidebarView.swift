@@ -100,6 +100,27 @@ private struct PnlCard: View {
                 }
             }
 
+            // Market-session split (ASIA/LDN/NY) — all-sessions trading.
+            if stats.marketRows.count > 1 {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(stats.marketRows) { row in
+                        HStack(spacing: 6) {
+                            Text(row.instrument)
+                                .font(Theme.monoSmall)
+                                .foregroundStyle(Theme.cyan)
+                            Spacer(minLength: 8)
+                            Text(SidebarFmt.signedUsd(row.netUsd))
+                                .font(Theme.monoSmall)
+                                .foregroundStyle(SidebarFmt.pnlColor(row.netUsd))
+                            Text("· \(row.trades)")
+                                .font(Theme.monoSmall)
+                                .foregroundStyle(Theme.textDim)
+                        }
+                    }
+                }
+                .padding(.top, 2)
+            }
+
             SidebarRow(
                 label: "DAILY TARGET",
                 value: stats.dailyTargetUsd.map { SidebarFmt.usd($0) } ?? "—",

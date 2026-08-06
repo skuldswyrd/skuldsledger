@@ -12,15 +12,30 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showSettleDay = false
     @State private var showAnalytics = false
+    @State private var showNewSession = false
+    @State private var newSessionName = ""
+    @State private var newSessionInstrument: Instrument = .NQ
 
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.bg)
-            .alert("Skuld's Ledger", isPresented: errorPresented) {
-                Button("OK", role: .cancel) { store.errorMessage = nil }
-            } message: {
-                Text(store.errorMessage ?? "")
+            // errors are a TOAST now, never a modal — a modal error landing
+            // on top of a confirmation dialog could deadlock the whole UI
+            // (the end-session freeze). Toast can't block anything.
+            .overlay(alignment: .top) {
+                if let msg = store.errorMessage {
+                    ErrorToast(message: msg) { store.errorMessage = nil }
+                }
+            }
+            .sheet(isPresented: $showNewSession) {
+                NewSessionSheet(
+                    name: $newSessionName,
+                    instrument: $newSessionInstrument
+                ) {
+                    store.createNamedSession(name: newSessionName, instrument: newSessionInstrument)
+                    newSessionName = ""
+                }
             }
             .sheet(isPresented: $showUpgradeLog) {
                 UpgradeLogView()
@@ -35,8 +50,52 @@ struct ContentView: View {
                 AnalyticsView()
             }
             .toolbar {
-                // Always visible — pre-session setup included: edition badge
-                // and the TradingView tie live here.
+                // Always visible — pre-session setup included: session
+                // browser, edition badge and the TradingView tie live here.
+                ToolbarItem(placement: .navigation) {
+                    // pick any session, jump to today, start a named
+                    // workspace ("LEAP tournament"), reopen a closed one
+                    Menu {
+                        Button("Today (\(store.todayDate))") { store.selectToday() }
+                        Divider()
+                        ForEach(store.allSessions.prefix(15)) { s in
+                            Button {
+                                store.selectSession(id: s.id)
+                            } label: {
+                                let net = store.sessionNets[s.id] ?? 0
+                                Text("\(s.displayTitle)\(s.status == "done" ? " ·closed" : "")\(net != 0 ? String(format: " · %@$%.0f", net < 0 ? "-" : "+", abs(net)) : "")")
+                            }
+                        }
+                        Divider()
+                        Button("New named session…") { showNewSession = true }
+                        if store.session?.status == "done" {
+                            Button("Reopen this session") {
+                                if let id = store.session?.id { store.reopenSession(id: id) }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(store.session?.status == "open" ? Theme.green : Theme.textDim)
+                                .frame(width: 8, height: 8)
+                            Text(sessionTitle)
+                                .font(Theme.mono)
+                                .foregroundStyle(Theme.text)
+                            if store.pinnedSessionId != nil {
+                                Image(systemName: "pin.fill")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(Theme.amber)
+                            }
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 8))
+                                .foregroundStyle(Theme.textDim)
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Sessions — switch, reopen, or start a named workspace")
+                }
                 ToolbarItem(placement: .navigation) {
                     Text("LEDGER v\(AppVersion.string)")
                         .font(.system(size: 9, weight: .semibold, design: .monospaced))
@@ -111,14 +170,6 @@ struct ContentView: View {
         }
     }
 
-    /// errorMessage is a settable @Published on the store; clearing on dismiss
-    /// keeps the alert single-shot without extra local state.
-    private var errorPresented: Binding<Bool> {
-        Binding(
-            get: { store.errorMessage != nil },
-            set: { presented in if !presented { store.errorMessage = nil } }
-        )
-    }
 
     // MARK: - Live session layout
 
@@ -163,16 +214,6 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var sessionToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(store.session?.status == "open" ? Theme.green : Theme.textDim)
-                    .frame(width: 8, height: 8)
-                Text("\(store.session?.instrument ?? "?")  \(store.session?.date ?? "")")
-                    .font(Theme.mono)
-                    .foregroundStyle(Theme.text)
-            }
-        }
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
                 store.syncLevelsFromChart(manual: true)
@@ -199,6 +240,14 @@ struct ContentView: View {
         }
     }
 
+    private var sessionTitle: String {
+        guard let s = store.session else { return "—" }
+        if let name = s.name, !name.isEmpty {
+            return "\(name) · \(s.instrument)"
+        }
+        return "\(s.instrument)  \(s.date)"
+    }
+
     private var syncHelp: String {
         if let last = store.lastLevelSync {
             let fmt = DateFormatter()
@@ -215,6 +264,95 @@ struct ContentView: View {
 
     private static func usd(_ value: Double) -> String {
         String(format: "$%.0f", max(0, value))
+    }
+}
+
+// MARK: - Error toast (non-modal by design — modals can deadlock over dialogs)
+
+private struct ErrorToast: View {
+    let message: String
+    let dismiss: () -> Void
+    @State private var ticking = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle().fill(Theme.amber).frame(width: 7, height: 7)
+            Text(message)
+                .font(Theme.monoSmall)
+                .foregroundStyle(Theme.text)
+                .lineLimit(3)
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Theme.textDim)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Theme.card)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.amber.opacity(0.5)))
+        )
+        .padding(.top, 8)
+        .transition(.move(edge: .top).combined(with: .opacity))
+        .onAppear {
+            guard !ticking else { return }
+            ticking = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { dismiss() }
+        }
+    }
+}
+
+// MARK: - New named session sheet
+
+private struct NewSessionSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var name: String
+    @Binding var instrument: Instrument
+    let create: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("NEW NAMED SESSION")
+                .font(Theme.mono)
+                .foregroundStyle(Theme.text)
+            Text("A dedicated workspace — every post, trade and mentor thread for one effort (a tournament, an experiment) lives in it. Reopen it any day from the session menu.")
+                .font(Theme.monoSmall)
+                .foregroundStyle(Theme.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("Name — e.g. LEAP tournament", text: $name)
+                .textFieldStyle(.plain)
+                .font(Theme.mono)
+                .foregroundStyle(Theme.text)
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.inset))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.cardBorder))
+            Picker("Instrument", selection: $instrument) {
+                ForEach(Instrument.allCases) { inst in
+                    Text(inst.rawValue).tag(inst)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Create") {
+                    create()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(16)
+        .frame(width: 420)
+        .background(Theme.bg)
     }
 }
 
