@@ -2,6 +2,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  SKULD UNIFIED v2 — one indicator, self-switching by chart timeframe.
 //
+//  v2.4.2 (2026-07-30): REACT prints as a percent ("REACT 11% ✗") on the
+//     label and the row — the score is the share of possible defense
+//     evidence at the touch. The feed keeps the raw number (score=11).
 //  v2.4.1 (2026-07-30): STAMP renamed REACT everywhere user-facing — the
 //     number is a 0-100 reaction-quality score (share of possible defense
 //     evidence), NOT a touch count; the old word read like one. Touch
@@ -1305,7 +1308,7 @@ if barstate.isconfirmed
                     stLastName := clN.get(i)
                     stLastBar := bar_index
                     color scol = score >= 70 ? colUp : score >= 40 ? #ffb300 : colStop
-                    stLbs.push(label.new(time, arrDir == -1 ? low : high, "REACT " + str.tostring(math.round(score)) + " " + band, xloc = xloc.bar_time, style = arrDir == -1 ? label.style_label_up : label.style_label_down, color = color.new(#0d0d10, 20), textcolor = scol, size = size.small))
+                    stLbs.push(label.new(time, arrDir == -1 ? low : high, "REACT " + str.tostring(math.round(score)) + "% " + band, xloc = xloc.bar_time, style = arrDir == -1 ? label.style_label_up : label.style_label_down, color = color.new(#0d0d10, 20), textcolor = scol, size = size.small))
                     if stLbs.size() > 20
                         label.delete(stLbs.shift())
                     evStamp := true
@@ -1853,7 +1856,7 @@ if showDash and barstate.islast
     // how price is arriving at the next ranked cluster
     f_row(dash, 8, "APPR", apReplaceNearest ? "—" : apTxt, not apActive ? offC : apGrade == "DRIVE" ? badC : apGrade == "GRIND" ? okC : warnC)
     // last touch stamp: score · level · age
-    string stTxt = na(stLastScore) or htfMode ? "—" : str.tostring(math.round(stLastScore)) + " " + stLastBand + " · " + stLastName + " · " + str.tostring(bar_index - stLastBar) + "b ago"
+    string stTxt = na(stLastScore) or htfMode ? "—" : str.tostring(math.round(stLastScore)) + "% " + stLastBand + " · " + stLastName + " · " + str.tostring(bar_index - stLastBar) + "b ago"
     f_row(dash, 9, "REACT", stTxt, na(stLastScore) or htfMode ? offC : stLastScore >= 70 ? okC : stLastScore >= 40 ? warnC : badC)
     // the hour read — where the ledger says the money lives vs bleeds
     string ckTxt = inPrime ? "PRIME" : inCold ? "COLD" : "NEUTRAL"
