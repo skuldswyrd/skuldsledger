@@ -2,6 +2,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  SKULD UNIFIED v2 — one indicator, self-switching by chart timeframe.
 //
+//  v2.5.2 (2026-08-06): label offset default 1 bar — level labels hug the
+//     current candle instead of floating off-screen right.
 //  v2.5 (2026-08-06): ALL SESSIONS — Asia · London · NY are first-class.
 //   · Per-session VWAP + σ bands: reset at each session open, live in every
 //     session (the extension-zone reference finally exists off-NY).
@@ -177,7 +179,7 @@ int   inMinRank = input.int(6, "Min rank to trade a level", minval = 1, maxval =
 bool  showLvls  = input.bool(true, "Draw cluster lines + labels", group = GK)
 int   inMaxL    = input.int(12, "Max clusters shown (nearest kept)", minval = 2, maxval = 40, group = GK)
 float inHide    = input.float(0, "Hide clusters farther than (pts, 0 = off)", minval = 0, group = GK)
-int   inOff     = input.int(3, "Label offset (bars right)", minval = 1, maxval = 50, group = GK, tooltip = "Bars between the last candle and the line end / label. Bar-based, so it stays put at every zoom. Footprint charts have wide bars — keep this small (2-4).")
+int   inOff     = input.int(1, "Label offset (bars right)", minval = 1, maxval = 50, group = GK, tooltip = "Bars between the last candle and the line end / label. 1 = hugging price. Bar-based, so it stays put at every zoom and every chart style, footprint included.")
 bool  showPx    = input.bool(true, "Show price in labels", group = GK)
 
 string inVpStyle  = input.string("Lines", "Profile style", options = ["Lines", "Bars", "Off"], group = GV, tooltip = "Lines = no histogram, developing levels only (draw profiles by hand). Bars = borderless histogram. Off = nothing.")
