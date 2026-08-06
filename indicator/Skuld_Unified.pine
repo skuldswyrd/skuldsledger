@@ -2,7 +2,11 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  SKULD UNIFIED v2 — one indicator, self-switching by chart timeframe.
 //
-//  v2.4 (2026-07-30): DAY TYPE · APPROACH GRADE · TOUCH STAMP · LEDGER FEED.
+//  v2.4.1 (2026-07-30): STAMP renamed REACT everywhere user-facing — the
+//     number is a 0-100 reaction-quality score (share of possible defense
+//     evidence), NOT a touch count; the old word read like one. Touch
+//     counts stay separate (·T2 on NEAREST). Feed event is EVT=REACT.
+//  v2.4 (2026-07-30): DAY TYPE · APPROACH GRADE · TOUCH REACT · LEDGER FEED.
 //   All three features are ADVISORY/DISPLAY-ONLY at defaults — with every new
 //   toggle at its default the script's signals, levels, rows and drawings
 //   behave exactly as v2.3 (the new rows and feed alerts are the only
@@ -127,7 +131,7 @@ const string GT = "Discipline & trade plan"
 const string GZ = "Imbalance zones (footprint proxy)"
 const string GY = "Day Type"
 const string GAPR = "Approach"
-const string GSTP = "Touch Stamp"
+const string GSTP = "Touch React (0-100)"
 const string GLF = "Ledger Feed"
 const string GD = "Dashboard"
 const string GC = "Colors & lines"
@@ -227,7 +231,7 @@ float  dtRangeNY   = input.float(0.60, "Range gate × ADR(10) · NY", minval = 0
 float  dtRangeLDN  = input.float(0.45, "Range gate × ADR(10) · LDN", minval = 0.1, step = 0.05, group = GY)
 float  dtRangeAS   = input.float(0.30, "Range gate × ADR(10) · ASIA", minval = 0.1, step = 0.05, group = GY)
 string dtGateMode  = input.string("OFF", "Play matrix mode", options = ["OFF", "ADVISORY", "ENFORCE"], group = GY, tooltip = "OFF (default) = nothing changes, row is information only. ADVISORY = benched signals still print, dimmed, tagged BENCH. ENFORCE = benched markers suppressed; the ledger feed still fires a BENCHED event so offered counts survive. Matrix: strong trend benches counter-trend reversals and favors break-retest/APP with the move; balance favors reversals and benches break-retest; TRANSITION benches nothing.")
-bool   dtTrendMrException = input.bool(true, "Trend day: allow with-trend reversal at rank ≥ 8 with stamp ≥ 70", group = GY)
+bool   dtTrendMrException = input.bool(true, "Trend day: allow with-trend reversal at rank ≥ 8 with react ≥ 70", group = GY)
 bool   dtTint      = input.bool(false, "Faint background tint by day type", group = GY)
 
 // ── APPROACH ── execution mode only, display only
@@ -243,23 +247,23 @@ float apAlignHi  = input.float(65, "… and %", minval = 50, maxval = 100, step 
 bool  apReplaceNearest = input.bool(false, "Replace NEAREST cell while active (else own row)", group = GAPR)
 bool  apChartLabel = input.bool(true, "Label the target cluster when approach activates", group = GAPR)
 
-// ── TOUCH STAMP ── same evidence, same score, every touch. Approximation:
+// ── TOUCH REACT ── same evidence, same score, every touch. Approximation:
 // Pine cannot read true bid/ask order flow — volume splits stand in for it.
-bool  stOn       = input.bool(true, "Stamp ranked-cluster touches", group = GSTP)
+bool  stOn       = input.bool(true, "Score ranked-cluster reactions (REACT 0-100)", group = GSTP)
 int   stW1       = input.int(30, "Weight · delta flip vs approach", minval = 0, maxval = 100, group = GSTP, tooltip = "Touch bar's delta opposing the arrival direction, scaled by its size vs the approach window's average delta. APPROXIMATION of footprint order flow from lower-TF up/down volume — Pine cannot see true bid/ask.")
-int   stW2       = input.int(25, "Weight · volume at the extreme third", minval = 0, maxval = 100, group = GSTP, tooltip = "Share of the touch bar's lower-TF volume sitting in the range third nearest the level — bottom-heavy at support / top-heavy at resistance, computed. Same approximation note applies.")
+int   stW2       = input.int(25, "Weight · volume at the extreme third", minval = 0, maxval = 100, group = GSTP, tooltip = "Share of the touch bar's lower-TF volume sitting in the range third nearest the level — bottom-heavy at support · top-heavy at resistance, computed. Same approximation note applies.")
 int   stW3       = input.int(25, "Weight · rejection structure on the close", minval = 0, maxval = 100, group = GSTP)
 int   stW4       = input.int(20, "Weight · effort/result divergence", minval = 0, maxval = 100, group = GSTP)
 float stBotShare = input.float(45, "Extreme-third share for full weight %", minval = 30, maxval = 70, step = 5, group = GSTP)
 int   stampRearm = input.int(20, "Re-arm after (bars) or 2× cluster width away", minval = 5, maxval = 100, group = GSTP)
-bool  stampGateMR = input.bool(false, "Require a stamp for reversal signals", group = GSTP, tooltip = "OFF (default) = signals untouched. ON = the reversal play prints only when the touch bar (or the bar before) stamped at or above the minimum at that cluster.")
-int   stampMinMR = input.int(60, "Minimum stamp when gating", minval = 0, maxval = 100, group = GSTP)
-bool  stampDriveStrict = input.bool(false, "DRIVE arrival: raise the required stamp by 10", group = GSTP)
+bool  stampGateMR = input.bool(false, "Require a react score for reversal signals", group = GSTP, tooltip = "OFF (default) = signals untouched. ON = the reversal play prints only when the touch bar (or the bar before) stamped at or above the minimum at that cluster.")
+int   stampMinMR = input.int(60, "Minimum react score when gating", minval = 0, maxval = 100, group = GSTP)
+bool  stampDriveStrict = input.bool(false, "DRIVE arrival: raise the required react score by 10", group = GSTP)
 
 // ── LEDGER FEED ── pipe-delimited alert() events the journal ingests
-bool feedAlerts  = input.bool(true, "Feed events to alerts", group = GLF, tooltip = "One-line pipe-delimited events on confirmed bars: TOUCH, STAMP, DAYTYPE, APPR, BENCHED. Rides the same 'Any alert() function call' alert. Turn off if the alert stream gets noisy.")
+bool feedAlerts  = input.bool(true, "Feed events to alerts", group = GLF, tooltip = "One-line pipe-delimited events on confirmed bars: TOUCH, REACT, DAYTYPE, APPR, BENCHED. Rides the same 'Any alert() function call' alert. Turn off if the alert stream gets noisy.")
 bool feedTouch   = input.bool(true, "· TOUCH events", group = GLF)
-bool feedStamp   = input.bool(true, "· STAMP events", group = GLF)
+bool feedStamp   = input.bool(true, "· REACT events", group = GLF)
 bool feedDayType = input.bool(true, "· DAYTYPE changes", group = GLF)
 bool feedAppr    = input.bool(true, "· APPR changes", group = GLF)
 bool feedBench   = input.bool(true, "· BENCHED events", group = GLF)
@@ -1219,7 +1223,7 @@ if barstate.isconfirmed
                 evAppr := true
                 evApprTxt := "EVT=APPR|" + grade + "|target=" + bestN + " " + f_starTxt(f_stars(bestR2)) + "|dist_t=" + str.tostring(math.round(bestD / syminfo.mintick))
                 if apChartLabel and freshTarget
-                    apLbs.push(label.new(time, bestP, (dirTrav == 1 ? "▲ " : "▼ ") + grade, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(#0d0d10, 30), textcolor = grade == "DRIVE" ? colStop : grade == "GRIND" ? colUp : #787b86, size = size.tiny, tooltip = grade == "DRIVE" ? "Fast directional arrival — break-retest favored; reversal only on a strong stamp" : grade == "GRIND" ? "Rotational two-way arrival — reversal favored" : "Thin, low-participation arrival — pass or half size"))
+                    apLbs.push(label.new(time, bestP, (dirTrav == 1 ? "▲ " : "▼ ") + grade, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(#0d0d10, 30), textcolor = grade == "DRIVE" ? colStop : grade == "GRIND" ? colUp : #787b86, size = size.tiny, tooltip = grade == "DRIVE" ? "Fast directional arrival — break-retest favored; reversal only on a strong react score" : grade == "GRIND" ? "Rotational two-way arrival — reversal favored" : "Thin, low-participation arrival — pass or half size"))
                     if apLbs.size() > 10
                         label.delete(apLbs.shift())
             apDir := dirTrav
@@ -1233,7 +1237,7 @@ if barstate.isconfirmed
             apLvlP := na
             apLvlR := 0.0
             apLvlN := ""
-    // ── TOUCH STAMP (execution only; same evidence, same score) ──────────
+    // ── TOUCH REACT (execution only; same evidence, same score) ──────────
     if stOn and not htfMode and clP.size() > 0
         int arrDir = apDir != 0 ? apDir : close > close[5] ? 1 : -1
         float bestTchR = -1.0
@@ -1301,11 +1305,11 @@ if barstate.isconfirmed
                     stLastName := clN.get(i)
                     stLastBar := bar_index
                     color scol = score >= 70 ? colUp : score >= 40 ? #ffb300 : colStop
-                    stLbs.push(label.new(time, arrDir == -1 ? low : high, "STAMP " + str.tostring(math.round(score)) + " " + band, xloc = xloc.bar_time, style = arrDir == -1 ? label.style_label_up : label.style_label_down, color = color.new(#0d0d10, 20), textcolor = scol, size = size.small))
+                    stLbs.push(label.new(time, arrDir == -1 ? low : high, "REACT " + str.tostring(math.round(score)) + " " + band, xloc = xloc.bar_time, style = arrDir == -1 ? label.style_label_up : label.style_label_down, color = color.new(#0d0d10, 20), textcolor = scol, size = size.small))
                     if stLbs.size() > 20
                         label.delete(stLbs.shift())
                     evStamp := true
-                    evStampTxt := "EVT=STAMP|" + syminfo.ticker + "|" + str.tostring(time) + "|level=" + clN.get(i) + "|score=" + str.tostring(math.round(score)) + "|band=" + band
+                    evStampTxt := "EVT=REACT|" + syminfo.ticker + "|" + str.tostring(time) + "|level=" + clN.get(i) + "|score=" + str.tostring(math.round(score)) + "|band=" + band
                     if clR.get(i) > bestTchR
                         bestTchR := clR.get(i)
                         evTouch := true
@@ -1850,7 +1854,7 @@ if showDash and barstate.islast
     f_row(dash, 8, "APPR", apReplaceNearest ? "—" : apTxt, not apActive ? offC : apGrade == "DRIVE" ? badC : apGrade == "GRIND" ? okC : warnC)
     // last touch stamp: score · level · age
     string stTxt = na(stLastScore) or htfMode ? "—" : str.tostring(math.round(stLastScore)) + " " + stLastBand + " · " + stLastName + " · " + str.tostring(bar_index - stLastBar) + "b ago"
-    f_row(dash, 9, "STAMP", stTxt, na(stLastScore) or htfMode ? offC : stLastScore >= 70 ? okC : stLastScore >= 40 ? warnC : badC)
+    f_row(dash, 9, "REACT", stTxt, na(stLastScore) or htfMode ? offC : stLastScore >= 70 ? okC : stLastScore >= 40 ? warnC : badC)
     // the hour read — where the ledger says the money lives vs bleeds
     string ckTxt = inPrime ? "PRIME" : inCold ? "COLD" : "NEUTRAL"
     f_row(dash, 10, "CLOCK", ckTxt, inPrime ? okC : inCold ? badC : offC)
@@ -1873,7 +1877,7 @@ if barstate.isconfirmed and feedAlerts
 
 // manual-setup stubs for the same events
 alertcondition(evTouch, "SKULD feed · TOUCH", "SKULD TOUCH event")
-alertcondition(evStamp, "SKULD feed · STAMP", "SKULD STAMP event")
+alertcondition(evStamp, "SKULD feed · REACT", "SKULD REACT event")
 alertcondition(evDayType, "SKULD feed · DAYTYPE", "SKULD DAYTYPE change")
 alertcondition(evAppr, "SKULD feed · APPR", "SKULD APPR change")
 alertcondition(evBench, "SKULD feed · BENCHED", "SKULD BENCHED signal")
