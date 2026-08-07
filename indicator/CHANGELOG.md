@@ -1,3 +1,30 @@
+# SKULD 2.7.0 — IB JOINS THE VOICE (2026-08-07)
+
+Title: "SKULD 2.7 — Dynamic Targeting · Levels · MR + IB".
+
+- **IB play alerts + dynamic construction.** IB acceptance break now fires
+  through the same §4 math as MR: entry = broken IB edge (retest resting
+  limit, offset into the zone), structure stop on the far side of the edge
+  zone, TP1 in front of the next opposing qualifying level, room gate
+  included. Room fails → `EVT=NOTRADE|play=IB` and the per-side shot is NOT
+  consumed — a later re-acceptance retries with fresh room. No
+  initiative/delta standdowns on IB (those are anti-reversal gates; IB rides
+  WITH the move). Four alertconditions now: BUY/SELL MR + BUY/SELL IB, same
+  pipe payload (`SKULD|BUY IB|{ticker}|E:|S:|T1:|R:|LVL:|time`). HUD SIGNAL
+  block shows the owning play. Coverage: MR eats balance days, IB eats trend
+  days.
+- **REACT de-spam.** New input "Chart-label reactions scoring ≥" (default
+  75, 0 = all): REACT labels print only for defended touches. Every score
+  still computes and feeds stats, gates, and the ledger feed — the chart
+  just stops wallpapering `0% ✗`.
+- **APPR labels DRIVE-only** by default (new toggle) — the freight-train
+  warning stays on the chart; GRIND/DRIFT live in the HUD/feed.
+- **Brighter signal.** Chart fire label fully opaque; HUD SIGNAL block
+  stronger fill, black/white text on the side color, E/S/T1/R row larger.
+
+Output budget: 9 plots + 4 alertconditions + 1 bgcolor = 14 calls (≈28
+units of the ~32-call overlay budget).
+
 # SKULD 2.6.0 — DYNAMIC TARGETING (2026-08-07)
 
 File renamed `Skuld_Unified.pine` → `skuld.pine`; indicator title is now

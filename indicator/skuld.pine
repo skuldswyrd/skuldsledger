@@ -2,6 +2,22 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  SKULD — one indicator, self-switching by chart timeframe.
 //
+//  v2.7.0 (2026-08-07): IB JOINS THE VOICE · REACT DE-SPAM · BRIGHTER SIGNAL.
+//   · IB play fires through the SAME dynamic construction as MR: entry =
+//     broken IB edge (retest resting limit), structure stop inside the
+//     balance, TP1 in front of the next opposing qualifying level, room
+//     gate included ("see money, take money" on breakouts too). Room fails
+//     → NOTRADE event and the per-side shot is NOT consumed — a later
+//     re-acceptance retries with fresh room. Four alertconditions now:
+//     BUY/SELL MR + BUY/SELL IB, same pipe format. Two-play coverage:
+//     MR eats balance days, IB eats trend days.
+//   · REACT labels print only at/above a score threshold (input, default
+//     75 — the defended touches). Every score still computes and feeds
+//     stats, gates and the feed; the chart just stops wallpapering 0% ✗.
+//   · APPR chart labels: DRIVE (freight train) only by default — GRIND /
+//     DRIFT stay in the HUD/feed (toggle restores 2.6 behavior).
+//   · Signal brightness: chart fire label fully opaque; HUD SIGNAL block
+//     fill stronger, E/S/T1/R row larger.
 //  v2.6.0 (2026-08-07): DYNAMIC TARGETING — every level carries a live,
 //     directional, regime-aware EFFECTIVE SCORE; the only outputs are the
 //     few levels in play and a limit-order-ready MR signal with a dynamic
@@ -34,9 +50,9 @@
 //   · HUD: trade-entry info only — nearest qualifying level each side +
 //     ROOM check while waiting; E/S/T1/R + validity countdown on signal.
 //     The old 13-row system panel moved behind showDebugHud.
-//   · ALERTS: exactly two alertconditions — SKULD BUY MR / SKULD SELL MR,
-//     pipe-delimited with E/S/TP1/R/level/score, readable off a phone.
-//     IB/APP/BRT plays still detect and draw, but no longer alert. The
+//   · ALERTS (2.6; 2.7 adds IB): pipe-delimited with E/S/TP1/R/level/
+//     score, readable off a phone.
+//     APP/BRT plays still detect and draw, but no longer alert. The
 //     ledger feed events are opt-in now (feedAlerts default OFF); NOTRADE
 //     events report room-gate kills.
 //  v2.5.2 (2026-08-06): label offset default 1 bar — level labels hug the
@@ -165,7 +181,7 @@
 //  Candle-close confirmed only. No lookahead. No repaint.
 //  One alert covers all: "Any alert() function call".
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SKULD 2.6 — Dynamic Targeting · Levels · MR", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("SKULD 2.7 — Dynamic Targeting · Levels · MR + IB", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
 // ── ASSET AUTO-TUNE ────────────────────────────────────────────────────────
 bool isES = syminfo.root == "ES" or syminfo.root == "MES"
@@ -307,6 +323,7 @@ float apAlignLo  = input.float(35, "DRIFT: delta alignment between % …", minva
 float apAlignHi  = input.float(65, "… and %", minval = 50, maxval = 100, step = 5, group = GAPR)
 bool  apReplaceNearest = input.bool(false, "Replace NEAREST cell while active (else own row)", group = GAPR)
 bool  apChartLabel = input.bool(true, "Label the target cluster when approach activates", group = GAPR)
+bool  apLabelDriveOnly = input.bool(true, "Chart-label DRIVE arrivals only", group = GAPR, tooltip = "DRIVE (freight train into the level) is the arrival that changes behavior — GRIND/DRIFT stay off the chart (HUD/feed keep them). Turn off to label every approach like 2.6.")
 
 // ── TOUCH REACT ── same evidence, same score, every touch. Approximation:
 // Pine cannot read true bid/ask order flow — volume splits stand in for it.
@@ -320,6 +337,7 @@ int   stampRearm = input.int(20, "Re-arm after (bars) or 2× cluster width away"
 bool  stampGateMR = input.bool(false, "Require a react score for reversal signals", group = GSTP, tooltip = "OFF (default) = signals untouched. ON = the reversal play prints only when the touch bar (or the bar before) stamped at or above the minimum at that cluster.")
 int   stampMinMR = input.int(60, "Minimum react score when gating", minval = 0, maxval = 100, group = GSTP)
 bool  stampDriveStrict = input.bool(false, "DRIVE arrival: raise the required react score by 10", group = GSTP)
+int   inReactShowMin = input.int(75, "Chart-label reactions scoring ≥ (0 = all)", minval = 0, maxval = 100, group = GSTP, tooltip = "REACT labels print only at/above this score — the chart shows defended touches, not every 0% pass-through. Scores below it still compute and feed the stats, gates and ledger feed.")
 
 // ── LEDGER FEED ── pipe-delimited alert() events the journal ingests
 bool feedAlerts  = input.bool(false, "Feed events to alerts", group = GLF, tooltip = "One-line pipe-delimited events on confirmed bars: TOUCH, REACT, DAYTYPE, APPR, BENCHED, NOTRADE. Rides the same 'Any alert() function call' alert. Default OFF since 2.6 — the only default alerts are BUY MR / SELL MR. Flip ON to feed Skuld's Ledger.")
@@ -959,6 +977,7 @@ var int dnStrk = 0
 var float barVolUD = 0.0
 // live MR signal (HUD SIGNAL state + validity window)
 var int sigDir = 0
+var string sigPlay = "MR"     // which play owns the HUD block: MR or IB
 var float sigE = na
 var float sigS = na
 var float sigT = na
@@ -1703,7 +1722,7 @@ if barstate.isconfirmed
             if grade != apGrade or freshTarget
                 evAppr := true
                 evApprTxt := "EVT=APPR|" + grade + "|target=" + bestN + " " + f_starTxt(f_stars(bestR2)) + "|dist_t=" + str.tostring(math.round(bestD / syminfo.mintick))
-                if apChartLabel and freshTarget
+                if apChartLabel and freshTarget and (not apLabelDriveOnly or grade == "DRIVE")
                     apLbs.push(label.new(time, bestP, (dirTrav == 1 ? "▲ " : "▼ ") + grade, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(#0d0d10, 30), textcolor = grade == "DRIVE" ? colStop : grade == "GRIND" ? colUp : #787b86, size = size.tiny, tooltip = grade == "DRIVE" ? "Fast directional arrival — break-retest favored; reversal only on a strong react score" : grade == "GRIND" ? "Rotational two-way arrival — reversal favored" : "Thin, low-participation arrival — pass or half size"))
                     if apLbs.size() > 10
                         label.delete(apLbs.shift())
@@ -1938,10 +1957,14 @@ if barstate.isconfirmed
                             stLastBand := band
                             stLastName := poolName.get(i)
                             stLastBar := bar_index
-                            color scol = score >= 70 ? colUp : score >= 40 ? #ffb300 : colStop
-                            stLbs.push(label.new(time, arrDir == -1 ? low : high, "REACT " + str.tostring(math.round(score)) + "% " + band, xloc = xloc.bar_time, style = arrDir == -1 ? label.style_label_up : label.style_label_down, color = color.new(#0d0d10, 20), textcolor = scol, size = size.small))
-                            if stLbs.size() > 20
-                                label.delete(stLbs.shift())
+                            // 2.7: label only the defended touches — the
+                            // chart stops wallpapering 0% ✗. Score always
+                            // computes; stats/gates/feed see everything.
+                            if inReactShowMin == 0 or score >= inReactShowMin
+                                color scol = score >= 70 ? colUp : score >= 40 ? #ffb300 : colStop
+                                stLbs.push(label.new(time, arrDir == -1 ? low : high, "REACT " + str.tostring(math.round(score)) + "% " + band, xloc = xloc.bar_time, style = arrDir == -1 ? label.style_label_up : label.style_label_down, color = color.new(#0d0d10, 20), textcolor = scol, size = size.small))
+                                if stLbs.size() > 20
+                                    label.delete(stLbs.shift())
                             evStamp := true
                             evStampTxt := "EVT=REACT|" + syminfo.ticker + "|" + str.tostring(time) + "|level=" + poolName.get(i) + "|score=" + str.tostring(math.round(score)) + "|band=" + band
                         if ranked and poolRank.get(i) > bestTchR
@@ -1961,32 +1984,54 @@ int fireDir = 0
 string fireTag = ""
 string fireLvl = ""
 float fireRank = 0.0
-// dynamically constructed MR prices (na = the firing play is not MR)
+// dynamically constructed prices (na = the firing play has no dynamic
+// construction — APP/BRT). 2.7: MR and IB both build these.
 float mrE = na
 float mrS = na
 float mrT = na
 float mrR = na
+string dynTag = ""
 
 if barstate.isconfirmed and not htfMode
     if inAnySess and ibDone and not na(ibHi)
         accUp := close > ibHi ? accUp + 1 : 0
         accDn := close < ibLo ? accDn + 1 : 0
     bool gate = (not inRthOnly or inRTH) and (not inSessOnly or inAnySess) and (not useLunch or not inLunch) and (not inHardCap or sigCnt < inMaxSig) and bar_index - lastSigBar >= inCd
-    // IB — the set play (priority)
-    if enIB and gate and ibDone and accUp == inAcc and firedUp < inMaxBrk
-        sigIBUp := true
-        fireDir := 1
-        fireTag := "IB ▲"
-        fireLvl := "IBH " + str.tostring(ibHi, format.mintick)
-        fireRank := 4
-        firedUp += 1
-    else if enIB and gate and ibDone and accDn == inAcc and firedDn < inMaxBrk
-        sigIBDn := true
-        fireDir := -1
-        fireTag := "IB ▼"
-        fireLvl := "IBL " + str.tostring(ibLo, format.mintick)
-        fireRank := 4
-        firedDn += 1
+    // IB — the set play (priority). 2.7: fires through the SAME dynamic
+    // construction as MR — entry = broken IB edge (retest resting limit),
+    // structure stop inside the balance, TP1 in front of the next opposing
+    // qualifying level, room gate included. Room fails → NOTRADE and the
+    // per-side shot is NOT consumed (a re-acceptance retries with room).
+    // No initiative/delta standdowns here — those are anti-reversal gates;
+    // IB rides WITH the move.
+    if enIB and gate and ibDone and not na(dAtr) and ((accUp == inAcc and firedUp < inMaxBrk) or (accDn == inAcc and firedDn < inMaxBrk))
+        int ibDir = accUp == inAcc and firedUp < inMaxBrk ? 1 : -1
+        string ibNm = ibDir == 1 ? "IBH" : "IBL"
+        // the IB edge is always a pool singleton while ibDone (f_poolAdd)
+        int ibIdx = -1
+        if poolP.size() > 0
+            for i = 0 to poolP.size() - 1
+                if poolName.get(i) == ibNm
+                    ibIdx := i
+        if ibIdx >= 0
+            [ie1, is1, it1, ir1, iOk] = f_construct(ibIdx, ibDir, dAtr)
+            if iOk
+                fireDir := ibDir
+                fireTag := ibDir == 1 ? "IB ▲" : "IB ▼"
+                fireLvl := ibNm + " " + str.tostring(ibDir == 1 ? ibHi : ibLo, format.mintick)
+                fireRank := 4
+                mrE := ie1
+                mrS := is1
+                mrT := it1
+                mrR := ir1
+                dynTag := "IB"
+                if ibDir == 1
+                    firedUp += 1
+                else
+                    firedDn += 1
+            else
+                evNoTrade := true
+                evNoTradeTxt := "EVT=NOTRADE|reason=room|play=IB|side=" + (ibDir == 1 ? "long" : "short") + "|level=" + ibNm
     // MR — reversal at a working level. 2.6: candidates come from the
     // unified pool, gated by EFFECTIVE SCORE (arrival direction), the
     // initiative/delta standdowns, then DYNAMIC CONSTRUCTION + room gate.
@@ -2044,6 +2089,7 @@ if barstate.isconfirmed and not htfMode
                     mrS := cs
                     mrT := ct
                     mrR := cr
+                    dynTag := "MR"
                 else
                     // room gate failed at the FIRST opposing qualifying
                     // level — NO TRADE, never target through a working
@@ -2193,19 +2239,25 @@ if barstate.isconfirmed and not htfMode
     // signal validity: after validBars the emitted prices are stale (§4)
     if sigDir != 0 and bar_index - nz(sigBorn, -99999) >= inValidBars
         sigDir := 0
-    // fire: count, ONE signal label, trade plan lines. 2.6: only MR alerts
-    // (limit-ticket pipe format); IB/APP/BRT detect + draw silently.
+    // fire: count, ONE signal label, trade plan lines. 2.7: MR AND IB alert
+    // (limit-ticket pipe format, dynamic construction); APP/BRT detect +
+    // draw silently.
     if fireDir != 0
         sigCnt += 1
         lastSigBar := bar_index
-        bool isMRfire = not na(mrE)
-        float pe = isMRfire ? mrE : close
-        float ps = isMRfire ? mrS : pe - fireDir * stopPts
-        float pt = isMRfire ? mrT : pe + fireDir * tgtPts
-        if isMRfire
-            sigMRUp := fireDir == 1
-            sigMRDn := fireDir == -1
+        bool isDynFire = not na(mrE)
+        float pe = isDynFire ? mrE : close
+        float ps = isDynFire ? mrS : pe - fireDir * stopPts
+        float pt = isDynFire ? mrT : pe + fireDir * tgtPts
+        if isDynFire
+            if dynTag == "IB"
+                sigIBUp := fireDir == 1
+                sigIBDn := fireDir == -1
+            else
+                sigMRUp := fireDir == 1
+                sigMRDn := fireDir == -1
             sigDir := fireDir
+            sigPlay := dynTag
             sigE := pe
             sigS := ps
             sigT := pt
@@ -2213,15 +2265,15 @@ if barstate.isconfirmed and not htfMode
             sigBorn := bar_index
             sigLvlTxt := fireLvl
             // §8 — one line, pipe-delimited, keyed straight into limit tickets
-            alert("SKULD|" + (fireDir == 1 ? "BUY MR" : "SELL MR") + "|" + syminfo.ticker + "|E:" + str.tostring(pe, format.mintick) + "|S:" + str.tostring(ps, format.mintick) + "|T1:" + str.tostring(pt, format.mintick) + "|R:" + str.tostring(mrR, "#.##") + "|LVL:" + fireLvl + "|" + str.format_time(time, "yyyy-MM-dd HH:mm", TZ) + (inCold ? "|COLD HOUR" : ""), alert.freq_once_per_bar_close)
+            alert("SKULD|" + (fireDir == 1 ? "BUY " : "SELL ") + dynTag + "|" + syminfo.ticker + "|E:" + str.tostring(pe, format.mintick) + "|S:" + str.tostring(ps, format.mintick) + "|T1:" + str.tostring(pt, format.mintick) + "|R:" + str.tostring(mrR, "#.##") + "|LVL:" + fireLvl + "|" + str.format_time(time, "yyyy-MM-dd HH:mm", TZ) + (inCold ? "|COLD HOUR" : ""), alert.freq_once_per_bar_close)
         else
             // any newer fire supersedes the HUD signal — the plan lines now
-            // belong to this play, a stale MR E/S/T1 block would disagree
+            // belong to this play, a stale E/S/T1 block would disagree
             sigDir := 0
         // one label per signal — play, direction, score. Brand color block,
         // stays on the chart as the day's signal trail. Details live in the
         // alert text and the plan lines, not in chart clutter.
-        label.new(time, fireDir == 1 ? low : high, fireTag + (benchAdv ? " BENCH" : ""), xloc = xloc.bar_time, style = fireDir == 1 ? label.style_label_up : label.style_label_down, color = color.new(fireDir == 1 ? colUp : colDn, benchAdv ? 70 : 12), textcolor = fireDir == 1 ? color.black : color.white, size = sigSz, tooltip = fireLvl)
+        label.new(time, fireDir == 1 ? low : high, fireTag + (benchAdv ? " BENCH" : ""), xloc = xloc.bar_time, style = fireDir == 1 ? label.style_label_up : label.style_label_down, color = color.new(fireDir == 1 ? colUp : colDn, benchAdv ? 70 : 0), textcolor = fireDir == 1 ? color.black : color.white, size = sigSz, tooltip = fireLvl)
         if showPlan
             if not na(planE)
                 line.delete(planE)
@@ -2551,8 +2603,8 @@ if showDash and not showDebugHud and barstate.islast
     if not htfMode and sigDir != 0
         int leftBars = inValidBars - (bar_index - sigBorn)
         color sc = sigDir == 1 ? hOk : colDn
-        table.cell(hud, 0, 0, sigDir == 1 ? "BUY MR" : "SELL MR", text_color = sc, text_size = size.huge, bgcolor = color.new(sc, 88))
-        table.cell(hud, 0, 1, "E " + str.tostring(sigE, format.mintick) + "   S " + str.tostring(sigS, format.mintick) + "   T1 " + str.tostring(sigT, format.mintick) + "   R " + str.tostring(sigR, "#.#"), text_color = #d1d4dc, text_size = size.normal, bgcolor = color.new(#0d0d10, 8))
+        table.cell(hud, 0, 0, (sigDir == 1 ? "BUY " : "SELL ") + sigPlay, text_color = sigDir == 1 ? color.black : color.white, text_size = size.huge, bgcolor = color.new(sc, 25))
+        table.cell(hud, 0, 1, "E " + str.tostring(sigE, format.mintick) + "   S " + str.tostring(sigS, format.mintick) + "   T1 " + str.tostring(sigT, format.mintick) + "   R " + str.tostring(sigR, "#.#"), text_color = #ffffff, text_size = size.large, bgcolor = color.new(#0d0d10, 8))
         table.cell(hud, 0, 2, "VALID " + str.tostring(leftBars) + " bars", text_color = leftBars <= 2 ? #ffb300 : hDim, text_size = size.small, bgcolor = color.new(#0d0d10, 8))
     else if not htfMode
         int upIdx = -1
@@ -2611,11 +2663,13 @@ if barstate.isconfirmed and feedAlerts
     if evNoTrade
         alert(evNoTradeTxt, alert.freq_once_per_bar_close)
 
-// ── ALERTS (§8) — exactly TWO alertconditions. The dynamic payload
-// (E/S/TP1/R/level/score/time) rides the alert() call fired at signal time;
-// arm ONE alert with "Any alert() function call" to receive it.
+// ── ALERTS — FOUR alertconditions since 2.7: MR + IB, both sides. The
+// dynamic payload (E/S/TP1/R/level/score/time) rides the alert() call fired
+// at signal time; arm ONE alert with "Any alert() function call" to receive it.
 alertcondition(sigMRUp, "SKULD BUY MR", "SKULD BUY MR — pipe-delimited E/S/TP1/R in the alert() message")
 alertcondition(sigMRDn, "SKULD SELL MR", "SKULD SELL MR — pipe-delimited E/S/TP1/R in the alert() message")
+alertcondition(sigIBUp, "SKULD BUY IB", "SKULD BUY IB — pipe-delimited E/S/TP1/R in the alert() message")
+alertcondition(sigIBDn, "SKULD SELL IB", "SKULD SELL IB — pipe-delimited E/S/TP1/R in the alert() message")
 
 // faint day-type wash, OFF by default
 bgcolor(dtTint and dtOn and not htfMode ? (dtState == "TREND▲" ? color.new(colUp, 97) : dtState == "TREND▼" ? color.new(colStop, 97) : na) : na, title = "Day type tint")
