@@ -2,6 +2,20 @@
 // ═══════════════════════════════════════════════════════════════════════════
 //  SKULD — one indicator, self-switching by chart timeframe.
 //
+//  v2.8.0 (2026-08-07): BRT JOINS THE VOICE · HUD REBUILT TO THE DECK SPEC.
+//   · BRT (break-retest) ON by default and fires through dynamic
+//     construction: retest of a punched cluster holds → entry at the
+//     cluster edge, structure stop, TP1 in front of the next qualifying
+//     level, room gate. Room fails → NOTRADE, cluster state stays armed so
+//     a later retest inside the watch window retries. Six alertconditions:
+//     BUY/SELL MR · IB · BRT, one pipe format.
+//   · HUD rebuilt (the teaching-deck mockups won): header row "SKULD ·
+//     SYMBOL TF | WAITING/SIGNAL/STRUCTURE", aligned columns (side+name ·
+//     price · ±dist · score), ▲ short zone purple · ▼ long zone green,
+//     gold scores, ROOM row shows the available ticks per side (L OK·34t),
+//     SIGNAL grid labels E/S/T1/R individually colored (S red · T1 green ·
+//     R cyan), VALID shown as a clock (mm:ss). Table rebuilt on the last
+//     bar — no stale cells between states.
 //  v2.7.0 (2026-08-07): IB JOINS THE VOICE · REACT DE-SPAM · BRIGHTER SIGNAL.
 //   · IB play fires through the SAME dynamic construction as MR: entry =
 //     broken IB edge (retest resting limit), structure stop inside the
@@ -181,7 +195,7 @@
 //  Candle-close confirmed only. No lookahead. No repaint.
 //  One alert covers all: "Any alert() function call".
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SKULD 2.7 — Dynamic Targeting · Levels · MR + IB", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("SKULD 2.8 — Dynamic Targeting · MR + IB + BRT", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
 // ── ASSET AUTO-TUNE ────────────────────────────────────────────────────────
 bool isES = syminfo.root == "ES" or syminfo.root == "MES"
@@ -267,7 +281,7 @@ bool  inclSd2  = input.bool(true, "Include ±2σ (rank 6)", group = GR)
 bool  inclDay  = input.bool(true, "Include live session H/L (rank 8)", group = GR)
 bool  inclON   = input.bool(true, "Include ONH/ONL (rank 6)", group = GR)
 
-bool  enBRT     = input.bool(false, "Enable BRT play (break-retest)", group = GB, tooltip = "OFF by default — IB + MR only.")
+bool  enBRT     = input.bool(true, "Enable BRT play (break-retest)", group = GB, tooltip = "ON since 2.8 — broken level retested from the other side and held. Fires through the same dynamic construction and alerts as MR/IB. Trend-day continuation entries AT structure.")
 float inBrtEsc  = input.float(0.0, "Break margin pts (0 = auto: cluster width)", minval = 0, group = GB)
 int   inBrtWatch = input.int(20, "Retest watch window (bars)", minval = 2, maxval = 100, group = GB)
 
@@ -2188,25 +2202,47 @@ if barstate.isconfirmed and not htfMode
                         clSt.set(i, 0)
                     else if bar_index - clEB.get(i) > inBrtWatch
                         clSt.set(i, 3)
-                    else if low <= p + mrTol and close > p and gate and fireDir == 0
-                        clSt.set(i, 3)
-                        sigBRTUp := true
-                        fireDir := 1
-                        fireTag := "BRT ▲"
-                        fireLvl := f_scoreTxt(clR.get(i)) + " " + clN.get(i) + " @ " + str.tostring(p, format.mintick)
-                        fireRank := clR.get(i)
+                    else if low <= p + mrTol and close > p and gate and fireDir == 0 and not na(dAtr) and i < poolP.size()
+                        // 2.8: BRT fires through dynamic construction —
+                        // pool idx == cluster idx for cluster items. Room
+                        // fails → NOTRADE, state stays 1 so a later retest
+                        // inside the watch window can retry with room.
+                        [be1, bs1, bt1, br1, bOk] = f_construct(i, 1, dAtr)
+                        if bOk
+                            clSt.set(i, 3)
+                            fireDir := 1
+                            fireTag := "BRT ▲"
+                            fireLvl := clN.get(i) + " " + str.tostring(math.round(f_poolScore(i, -1), 1)) + "★ @ " + str.tostring(p, format.mintick)
+                            fireRank := clR.get(i)
+                            mrE := be1
+                            mrS := bs1
+                            mrT := bt1
+                            mrR := br1
+                            dynTag := "BRT"
+                        else
+                            evNoTrade := true
+                            evNoTradeTxt := "EVT=NOTRADE|reason=room|play=BRT|side=long|level=" + clN.get(i)
                 else if st == 2
                     if close > p
                         clSt.set(i, 0)
                     else if bar_index - clEB.get(i) > inBrtWatch
                         clSt.set(i, 3)
-                    else if high >= p - mrTol and close < p and gate and fireDir == 0
-                        clSt.set(i, 3)
-                        sigBRTDn := true
-                        fireDir := -1
-                        fireTag := "BRT ▼"
-                        fireLvl := f_scoreTxt(clR.get(i)) + " " + clN.get(i) + " @ " + str.tostring(p, format.mintick)
-                        fireRank := clR.get(i)
+                    else if high >= p - mrTol and close < p and gate and fireDir == 0 and not na(dAtr) and i < poolP.size()
+                        [be2, bs2, bt2, br2, bOk2] = f_construct(i, -1, dAtr)
+                        if bOk2
+                            clSt.set(i, 3)
+                            fireDir := -1
+                            fireTag := "BRT ▼"
+                            fireLvl := clN.get(i) + " " + str.tostring(math.round(f_poolScore(i, 1), 1)) + "★ @ " + str.tostring(p, format.mintick)
+                            fireRank := clR.get(i)
+                            mrE := be2
+                            mrS := bs2
+                            mrT := bt2
+                            mrR := br2
+                            dynTag := "BRT"
+                        else
+                            evNoTrade := true
+                            evNoTradeTxt := "EVT=NOTRADE|reason=room|play=BRT|side=short|level=" + clN.get(i)
     // ── day-type play matrix (opt-in; OFF = untouched) ───────────────────
     // Strong trend: bench counter-trend reversals, bench counter-trend
     // break-retest/APP. Balance: bench break-retest and APP. TRANSITION:
@@ -2253,6 +2289,9 @@ if barstate.isconfirmed and not htfMode
             if dynTag == "IB"
                 sigIBUp := fireDir == 1
                 sigIBDn := fireDir == -1
+            else if dynTag == "BRT"
+                sigBRTUp := fireDir == 1
+                sigBRTDn := fireDir == -1
             else
                 sigMRUp := fireDir == 1
                 sigMRDn := fireDir == -1
@@ -2591,22 +2630,57 @@ if showDash and showDebugHud and barstate.islast
     string rgTxt = f_tierName() + (na(atrPct) ? "" : " · " + str.tostring(math.round(atrPct)) + "pct") + (na(dAtr) ? "" : " · dATR " + str.tostring(dAtr, format.mintick)) + (useVix and not na(vixD) ? " · VIX " + str.tostring(vixD, "#.#") : "")
     f_row(dash, 13, "REGIME", rgTxt, tier >= 3 ? badC : tier == 2 ? warnC : tier == 0 ? infC : okC)
 
-// ── HUD (2.6 default) — trade-entry information ONLY ───────────────────────
-// WAITING: nearest qualifying level each side + would-the-room-gate-pass.
-// SIGNAL: BUY/SELL MR + E/S/T1/R + validity countdown, persists validBars
-// bars or until superseded. Nothing else.
-var table hud = showDash and not showDebugHud ? table.new(f_dashPos(), 1, 3, bgcolor = color.new(#0d0d10, 8), border_width = 1, border_color = color.new(#673ab7, 55)) : table(na)
+// ── HUD (2.8 · deck spec) — trade-entry information ONLY ───────────────────
+// Header row: SKULD · SYMBOL TF | state (WAITING amber · SIGNAL side color ·
+// STRUCTURE purple). WAITING: aligned columns — side+name · price · dist ·
+// score — ▲ short zone in purple, ▼ long zone in green, ROOM row carries the
+// available ticks per side. SIGNAL: boxed side block, labeled E/S/T1/R grid
+// (S red · T1 green · R cyan), VALID as a clock. Table is deleted + rebuilt
+// on the last bar so merges/stale cells can never leak between states.
+f_shortNm(string nm) =>
+    str.length(nm) > 16 ? str.substring(nm, 0, 15) + "…" : nm
+f_tfTxt() =>
+    timeframe.isseconds ? timeframe.period + "s" : timeframe.isminutes ? timeframe.period + "m" : timeframe.period
+var table hud = table(na)
 if showDash and not showDebugHud and barstate.islast
+    if not na(hud)
+        table.delete(hud)
+    hud := table.new(f_dashPos(), 4, 5, bgcolor = color.new(#0d0d10, 6), frame_width = 1, frame_color = color.new(#673ab7, 45))
     color hOk = #00ff00
     color hBad = #ef5350
     color hDim = #787b86
+    color hAmb = #ffb300
+    color hCyn = #00bcd4
+    color hGold = #ffd54f
+    color hCard = color.new(#0d0d10, 6)
+    // header: identity left, state right
+    string headL = "SKULD · " + syminfo.ticker + " " + f_tfTxt()
+    string hState = htfMode ? "STRUCTURE" : sigDir != 0 ? "SIGNAL" : "WAITING"
+    color hStCol = htfMode ? colDn : sigDir != 0 ? (sigDir == 1 ? hOk : colDn) : hAmb
+    table.cell(hud, 0, 0, headL, text_color = hDim, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
+    table.merge_cells(hud, 0, 0, 2, 0)
+    table.cell(hud, 3, 0, hState, text_color = hStCol, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
     if not htfMode and sigDir != 0
-        int leftBars = inValidBars - (bar_index - sigBorn)
+        // ── SIGNAL ──
+        int leftBars = math.max(0, inValidBars - (bar_index - sigBorn))
+        int vSecs = leftBars * tfSec
+        string vTxt = str.tostring(math.floor(vSecs / 60)) + ":" + (vSecs % 60 < 10 ? "0" : "") + str.tostring(vSecs % 60)
         color sc = sigDir == 1 ? hOk : colDn
-        table.cell(hud, 0, 0, (sigDir == 1 ? "BUY " : "SELL ") + sigPlay, text_color = sigDir == 1 ? color.black : color.white, text_size = size.huge, bgcolor = color.new(sc, 25))
-        table.cell(hud, 0, 1, "E " + str.tostring(sigE, format.mintick) + "   S " + str.tostring(sigS, format.mintick) + "   T1 " + str.tostring(sigT, format.mintick) + "   R " + str.tostring(sigR, "#.#"), text_color = #ffffff, text_size = size.large, bgcolor = color.new(#0d0d10, 8))
-        table.cell(hud, 0, 2, "VALID " + str.tostring(leftBars) + " bars", text_color = leftBars <= 2 ? #ffb300 : hDim, text_size = size.small, bgcolor = color.new(#0d0d10, 8))
+        table.cell(hud, 0, 1, (sigDir == 1 ? "BUY " : "SELL ") + sigPlay, text_color = sigDir == 1 ? color.black : color.white, text_size = size.huge, bgcolor = color.new(sc, 20))
+        table.merge_cells(hud, 0, 1, 3, 1)
+        table.cell(hud, 0, 2, "E", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)
+        table.cell(hud, 1, 2, str.tostring(sigE, format.mintick), text_color = #ffffff, text_size = size.large, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 2, 2, "S", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)
+        table.cell(hud, 3, 2, str.tostring(sigS, format.mintick), text_color = hBad, text_size = size.large, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 0, 3, "T1", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)
+        table.cell(hud, 1, 3, str.tostring(sigT, format.mintick), text_color = hOk, text_size = size.large, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 2, 3, "R", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)
+        table.cell(hud, 3, 3, str.tostring(sigR, "#.#"), text_color = hCyn, text_size = size.large, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 0, 4, "VALID", text_color = hDim, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
+        table.cell(hud, 1, 4, vTxt, text_color = leftBars <= 2 ? hAmb : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
+        table.merge_cells(hud, 1, 4, 3, 4)
     else if not htfMode
+        // ── WAITING ── nearest qualifying level each side
         int upIdx = -1
         int dnIdx = -1
         float upD = 1.0e18
@@ -2628,25 +2702,41 @@ if showDash and not showDebugHud and barstate.islast
                         dnD := close - y
                         dnIdx := i
                         dnEff := e2
-        string upTxt = upIdx < 0 ? "▲  —" : "▲  " + poolName.get(upIdx) + "  " + str.tostring(poolP.get(upIdx), format.mintick) + "  " + str.tostring(math.round(upD / syminfo.mintick)) + "t  " + str.tostring(math.round(upEff, 1)) + "★"
-        string dnTxt = dnIdx < 0 ? "▼  —" : "▼  " + poolName.get(dnIdx) + "  " + str.tostring(poolP.get(dnIdx), format.mintick) + "  " + str.tostring(math.round(dnD / syminfo.mintick)) + "t  " + str.tostring(math.round(dnEff, 1)) + "★"
-        // ROOM: would §4 pass right now — long at the ▼ level, short at ▲
+        // ROOM: would §4 pass right now — long at the ▼ level, short at ▲ —
+        // and how many ticks of travel the ticket would get.
         bool roomL = false
         bool roomS = false
+        int roomLt = 0
+        int roomSt = 0
         if not na(dAtr)
             if dnIdx >= 0
                 [rlE, rlS, rlT, rlR, rlOk] = f_construct(dnIdx, 1, dAtr)
                 roomL := rlOk
+                roomLt := int(math.round((rlT - rlE) / syminfo.mintick))
             if upIdx >= 0
                 [rsE, rsS, rsT, rsR, rsOk] = f_construct(upIdx, -1, dAtr)
                 roomS := rsOk
-        table.cell(hud, 0, 0, upTxt, text_color = upIdx < 0 ? hDim : #d1d4dc, text_size = size.normal, bgcolor = color.new(#0d0d10, 8))
-        table.cell(hud, 0, 1, dnTxt, text_color = dnIdx < 0 ? hDim : #d1d4dc, text_size = size.normal, bgcolor = color.new(#0d0d10, 8))
-        table.cell(hud, 0, 2, "ROOM  L: " + (roomL ? "OK" : "✗") + "   S: " + (roomS ? "OK" : "✗"), text_color = roomL or roomS ? hOk : hDim, text_size = size.small, bgcolor = color.new(#0d0d10, 8))
+                roomSt := int(math.round((rsE - rsT) / syminfo.mintick))
+        // ▲ = short zone (purple) · ▼ = long zone (green), deck columns:
+        // side+name · price · +dist · score
+        table.cell(hud, 0, 1, upIdx < 0 ? "▲ —" : "▲ " + f_shortNm(poolName.get(upIdx)), text_color = upIdx < 0 ? hDim : colDn, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard, tooltip = upIdx < 0 ? "" : poolName.get(upIdx))
+        table.cell(hud, 1, 1, upIdx < 0 ? "" : str.tostring(poolP.get(upIdx), format.mintick), text_color = colDn, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 2, 1, upIdx < 0 ? "" : "+" + str.tostring(math.round(upD / syminfo.mintick)) + "t", text_color = hDim, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 3, 1, upIdx < 0 ? "" : str.tostring(math.round(upEff, 1)) + "★", text_color = hGold, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 0, 2, dnIdx < 0 ? "▼ —" : "▼ " + f_shortNm(poolName.get(dnIdx)), text_color = dnIdx < 0 ? hDim : hOk, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard, tooltip = dnIdx < 0 ? "" : poolName.get(dnIdx))
+        table.cell(hud, 1, 2, dnIdx < 0 ? "" : str.tostring(poolP.get(dnIdx), format.mintick), text_color = hOk, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 2, 2, dnIdx < 0 ? "" : "-" + str.tostring(math.round(dnD / syminfo.mintick)) + "t", text_color = hDim, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 3, 2, dnIdx < 0 ? "" : str.tostring(math.round(dnEff, 1)) + "★", text_color = hGold, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 0, 3, "ROOM", text_color = hCyn, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
+        table.cell(hud, 1, 3, dnIdx < 0 ? "L —" : "L " + (roomL ? "OK·" : "✗·") + str.tostring(roomLt) + "t", text_color = dnIdx < 0 ? hDim : roomL ? hOk : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 2, 3, upIdx < 0 ? "S —" : "S " + (roomS ? "OK·" : "✗·") + str.tostring(roomSt) + "t", text_color = upIdx < 0 ? hDim : roomS ? hOk : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 3, 3, "", text_color = hDim, text_size = size.small, bgcolor = hCard)
     else
-        table.cell(hud, 0, 0, "STRUCTURE  ≥" + inModeTf, text_color = colDn, text_size = size.normal, bgcolor = color.new(#0d0d10, 8))
-        table.cell(hud, 0, 1, f_tierName() + (na(atrPct) ? "" : " · ATR " + str.tostring(math.round(atrPct)) + "pct"), text_color = hDim, text_size = size.small, bgcolor = color.new(#0d0d10, 8))
-        table.cell(hud, 0, 2, "map only — no signals", text_color = hDim, text_size = size.small, bgcolor = color.new(#0d0d10, 8))
+        // ── STRUCTURE ──
+        table.cell(hud, 0, 1, "map only — no signals", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)
+        table.merge_cells(hud, 0, 1, 3, 1)
+        table.cell(hud, 0, 2, f_tierName() + (na(atrPct) ? "" : " · ATR " + str.tostring(math.round(atrPct)) + "pct"), text_color = hDim, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
+        table.merge_cells(hud, 0, 2, 3, 2)
 
 // ── LEDGER FEED — the journal's data stream ─────────────────────────────────
 if barstate.isconfirmed and feedAlerts
@@ -2670,6 +2760,8 @@ alertcondition(sigMRUp, "SKULD BUY MR", "SKULD BUY MR — pipe-delimited E/S/TP1
 alertcondition(sigMRDn, "SKULD SELL MR", "SKULD SELL MR — pipe-delimited E/S/TP1/R in the alert() message")
 alertcondition(sigIBUp, "SKULD BUY IB", "SKULD BUY IB — pipe-delimited E/S/TP1/R in the alert() message")
 alertcondition(sigIBDn, "SKULD SELL IB", "SKULD SELL IB — pipe-delimited E/S/TP1/R in the alert() message")
+alertcondition(sigBRTUp, "SKULD BUY BRT", "SKULD BUY BRT — pipe-delimited E/S/TP1/R in the alert() message")
+alertcondition(sigBRTDn, "SKULD SELL BRT", "SKULD SELL BRT — pipe-delimited E/S/TP1/R in the alert() message")
 
 // faint day-type wash, OFF by default
 bgcolor(dtTint and dtOn and not htfMode ? (dtState == "TREND▲" ? color.new(colUp, 97) : dtState == "TREND▼" ? color.new(colStop, 97) : na) : na, title = "Day type tint")

@@ -1,3 +1,28 @@
+# SKULD 2.8.0 — BRT JOINS THE VOICE · DECK-SPEC HUD (2026-08-07)
+
+Title: "SKULD 2.8 — Dynamic Targeting · MR + IB + BRT".
+
+- **BRT play wired into the voice** (his call after the trend-day talk —
+  broken support becomes resistance; short the retest AT structure instead
+  of mid-air). `enBRT` now defaults ON. Fires through the same §4 dynamic
+  construction as MR/IB: entry at the retested cluster edge, structure stop,
+  TP1 in front of the next opposing qualifying level, room gate. Room fails
+  → `EVT=NOTRADE|play=BRT` and the cluster's break-retest state stays armed
+  — a later retest inside the watch window retries. Six alertconditions:
+  BUY/SELL × MR/IB/BRT, one pipe payload format.
+- **HUD rebuilt to the teaching-deck spec** (the deck mockups beat the
+  implementation): header row `SKULD · SYMBOL TF` + state chip
+  (WAITING amber / SIGNAL side-colored / STRUCTURE purple); WAITING rows in
+  aligned columns — side+name (truncated, full name in tooltip) · price ·
+  ±dist · score — ▲ short zone purple, ▼ long zone green, scores gold;
+  ROOM row carries available ticks per side (`L OK·34t  S ✗·12t`); SIGNAL
+  state = boxed side block + labeled E/S/T1/R grid (S red · T1 green ·
+  R cyan) + VALID as mm:ss clock. Table deleted + rebuilt each last bar so
+  merges/stale cells can't leak between states.
+
+Output budget: 9 plots + 6 alertconditions + 1 bgcolor = 16 calls (≈32
+units of the ~64-unit overlay budget).
+
 # SKULD 2.7.0 — IB JOINS THE VOICE (2026-08-07)
 
 Title: "SKULD 2.7 — Dynamic Targeting · Levels · MR + IB".
