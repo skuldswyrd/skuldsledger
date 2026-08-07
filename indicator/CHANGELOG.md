@@ -1,3 +1,70 @@
+# SKULD 2.6.0 — DYNAMIC TARGETING (2026-08-07)
+
+File renamed `Skuld_Unified.pine` → `skuld.pine`; indicator title is now
+"SKULD 2.6 — Dynamic Targeting · Levels · MR". Versioning is plain numbers
+from here (2.6.0 → 2.6.1 …), "Unified" is retired.
+
+One line: every displayed level carries a live, directional, regime-aware
+EFFECTIVE SCORE; the only outputs are the few levels in play and a
+limit-order-ready MR signal with a dynamic TP1 at the next working level
+("see money, take money").
+
+## Effective Score engine (§2)
+- Per-atomic-level reaction memory in `map<string, DirStat/FreshStat>`,
+  keyed by stable identity (names; HVN/LVN by price bucket), per approach
+  direction (`|B` fromBelow · `|A` fromAbove).
+- Touch → 3-bar outcome window → HOLD (close back + 0.10×dATR travel) or
+  BREAK (2 acceptance closes beyond the far edge, or 0.10×dATR wick travel)
+  → EWMA hold rate (α 0.4). Neutral touches count freshness only.
+- effComponent = baseRank × clamp(0.5 + holdRate, 0.5, 1.5) × 0.85^touchesToday.
+  Cluster EffScore = Σ members (+ imbalance-zone ◆ bonus). Untested = exactly
+  raw rank. Stats epoch-reset by level scope (session/day/week).
+- Emergent fix: a level broken 3+ times decays off the chart.
+
+## Regime engine (§3)
+- dATR = prior day's ATR(14); VIX = prior day's close (both `[1]` +
+  `lookahead_on` — stable all day, no repaint). 60-day ATR percentile →
+  LOW/NORM/HIGH/EXTREME tier, VIX ≥20/≥30 bumps +1/+2.
+- Tier drives cluster width (×dATR), display/trade score floors, TP
+  floor/cap, stop buffer — all inputs (§3 table defaults). Width recomputes
+  only at session boundaries or tier change. <20 days history → NORM.
+
+## Dynamic trade construction, MR only (§4)
+- entry = cluster edge offset 0.25×W into the zone (resting-limit retest);
+  stop = far edge ± stopBuffer×dATR; TP1 = front edge of the FIRST opposing
+  qualifying level minus a standoff — never through a working level.
+- Room gate: tpDist ≥ max(0.7 × stopDist, tpFloor×dATR) or NO TRADE (never
+  skip to the next cluster; a NOTRADE feed event records the kill).
+  Open field → TP1 = entry ± tpCap×dATR. R emitted. Valid 10 bars.
+
+## MR gates (§5)
+EffScore ≥ minTradeScore · room gate · initiative standdown (velocity ≤
+0.03×dATR/bar over 5 bars AND ≤6 consecutive closes into the level) ·
+lower-TF delta standdown (normalized delta with the approach ≥ 0.6).
+
+## Display & HUD (§6–§7)
+- EXECUTION draws only the nearest K (default 3) qualifying levels per side;
+  labels: `NAME · price · dist_t · EffScore★ · 3H/1B record`. STRUCTURE map
+  unchanged. Imbalance boxes hidden by default (`showImbBoxes`); the zone
+  engine and ◆ bonus stay live.
+- Default HUD = trade-entry only: WAITING (▲/▼ nearest qualifying + ROOM
+  L/S check) or SIGNAL (BUY/SELL MR · E/S/T1/R · VALID countdown). The old
+  13 rows (+ new REGIME row) live behind `showDebugHud`.
+
+## Alerts (§8)
+- Exactly two alertconditions: **SKULD BUY MR** / **SKULD SELL MR**. Payload
+  rides `alert()`: `SKULD|BUY MR|{ticker}|E:…|S:…|T1:…|R:…|LVL:…|{time}`.
+- IB/APP/BRT still detect and draw — silent. Ledger feed events now opt-in
+  (`feedAlerts` default OFF).
+
+## Unchanged (§0, §12)
+Anti-repaint architecture, rank table, cluster merge math, session presets,
+day-type engine, MR trigger bar-logic, BRT/APP/IB detection, ES/NQ
+auto-tune structure. Touch REACT scoring (S1–S4) kept, now fired off the
+unified touch event (its own re-arm loop retired).
+
+---
+
 # SKULD Unified v2.4 — CHANGES (2026-07-30)
 
 Three additive features + ledger feed. **At every default: signals, levels, existing table rows, plan lines and existing drawings behave exactly as v2.3.** New at defaults: the DAY TYPE / APPR / STAMP rows, approach + stamp labels (their features' display defaults per spec), and the feed alerts. Enforcement (`dtGateMode`, `stampGateMR`) ships OFF.

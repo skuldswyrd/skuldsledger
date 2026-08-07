@@ -4,7 +4,7 @@ One TradingView indicator, self-switching by timeframe. It IS the level engine t
 
 ## Install (2 minutes)
 
-1. TradingView → Pine Editor → delete whatever's there → paste the entire contents of `Skuld_Unified.pine` → **Add to chart**.
+1. TradingView → Pine Editor → delete whatever's there → paste the entire contents of `skuld.pine` → **Add to chart**.
 2. Create **one** alert: right-click chart → Add alert → Condition: this indicator → **"Any alert() function call"** → save. That single alert covers every play with full entry/stop/target text.
 3. Done. Re-paste the same way whenever the repo updates it.
 

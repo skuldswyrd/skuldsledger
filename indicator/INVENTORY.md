@@ -1,6 +1,6 @@
 # SKULD Unified — Phase 0 Inventory (2026-07-30, pre-v2.4)
 
-**Main file chosen:** `indicator/Skuld_Unified.pine` — title "Skuld Unified v2.3 — Levels · IB · MR · APP · Imbalance", 1,353 lines, Pine v6. This is the canonical repo copy (working copy `~/Desktop/Trading/Skuld_Unified_v2.pine` is a byte-identical sync of it). NOTE: the build spec said "~v9" — the repo is at v2.3; new work ships as **v2.4**.
+**Main file chosen:** `indicator/skuld.pine` — title "Skuld Unified v2.3 — Levels · IB · MR · APP · Imbalance", 1,353 lines, Pine v6. This is the canonical repo copy (working copy `~/Desktop/Trading/skuld.pine` is a byte-identical sync of it). NOTE: the build spec said "~v9" — the repo is at v2.3; new work ships as **v2.4**.
 
 ## Version & mode switch
 - Header changelog v1 → v2.3 (dated blocks). `htfMode = tfSec >= timeframe.in_seconds(inModeTf)`, input default "60": STRUCTURE at/above 1H (map only, no signals), EXECUTION below.

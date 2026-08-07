@@ -174,7 +174,7 @@
   },
   "indicator": {
     "name": "Skuld Unified v1",
-    "file": "Skuld_Unified_v1.pine",
+    "file": "skuld.pine",
     "replaces_for_execution": [
       "Skuld Levels v3",
       "Skuld Target Engine v3",
