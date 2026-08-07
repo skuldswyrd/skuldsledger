@@ -66,6 +66,8 @@ final class SessionStore: ObservableObject {
     @Published private(set) var stats: SessionStats = .empty
     /// Session browser: every session, newest first, with net badges.
     @Published private(set) var allSessions: [SessionRecord] = []
+    /// Blog posts (all of them — the blog spans sessions), newest touch first.
+    @Published private(set) var blogPosts: [BlogPostRecord] = []
     @Published private(set) var sessionNets: [String: Double] = [:]
     /// Non-nil = the user is working INSIDE a picked session (maybe a past
     /// day, maybe a named workspace) — day rollover must not yank them out.
@@ -147,6 +149,7 @@ final class SessionStore: ObservableObject {
             mentorAvailable = MentorService.locateCLI() != nil
             reloadAll()
             refreshSessionList()
+            reloadBlogPosts()
             startWatcher()
             startTimers()
             Task { await self.refreshTVStatus() }
@@ -1096,6 +1099,80 @@ final class SessionStore: ObservableObject {
         case .failure(let err):
             await MainActor.run { self.errorMessage = err.localizedDescription }
             return []
+        }
+    }
+
+    // MARK: - Blog (Skuldswyrd Online Edition)
+
+    func reloadBlogPosts() {
+        guard let db else { return }
+        blogPosts = (try? db.allBlogPosts()) ?? []
+    }
+
+    /// New empty draft, linked to the session on screen (if any).
+    func createBlogPost() -> BlogPostRecord? {
+        guard let db else { return nil }
+        let now = Workspace.isoNow()
+        let post = BlogPostRecord(
+            id: UUID().uuidString,
+            title: "",
+            body: "",
+            sessionId: session?.id,
+            status: "draft",
+            createdAt: now,
+            updatedAt: now)
+        do {
+            try db.save(post)
+            reloadBlogPosts()
+            return post
+        } catch {
+            errorMessage = "Could not create blog post: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func saveBlogPost(_ post: BlogPostRecord) {
+        guard let db else { return }
+        var p = post
+        p.updatedAt = Workspace.isoNow()
+        do {
+            try db.save(p)
+            reloadBlogPosts()
+        } catch {
+            errorMessage = "Could not save blog post: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteBlogPost(id: String) {
+        guard let db else { return }
+        do {
+            try db.deleteBlogPost(id: id)
+            reloadBlogPosts()
+        } catch {
+            errorMessage = "Could not delete blog post: \(error.localizedDescription)"
+        }
+    }
+
+    /// The on-screen session condensed to markdown — pasted into a draft so
+    /// the post is written from the day's record. nil when no session loaded.
+    func sessionDigestMarkdown() -> String? {
+        guard let s = session else { return nil }
+        return SessionDigest.markdown(
+            session: s, stats: stats, levels: levels,
+            entries: entries, trades: trades)
+    }
+
+    /// Writes Blog/exports/<date>-<slug>.md and reveals it in Finder.
+    @discardableResult
+    func exportBlogPost(id: String) -> URL? {
+        guard let post = blogPosts.first(where: { $0.id == id }) else { return nil }
+        do {
+            let url = try BlogExporter.write(post: post, root: Workspace.root)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return url
+        } catch {
+            errorMessage = "Blog export failed: \(error.localizedDescription)"
+            return nil
         }
     }
 

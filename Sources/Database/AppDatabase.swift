@@ -138,6 +138,24 @@ final class AppDatabase {
             try db.execute(sql: "ALTER TABLE sessions ADD COLUMN name TEXT;")
         }
 
+        // Blog posts (Skuldswyrd Online Edition) — written inside the ledger,
+        // optionally linked to the session they were written during.
+        migrator.registerMigration("v5") { db in
+            try db.execute(sql: """
+                CREATE TABLE blog_posts (
+                  id TEXT PRIMARY KEY,
+                  title TEXT NOT NULL DEFAULT '',
+                  body TEXT NOT NULL DEFAULT '',
+                  session_id TEXT REFERENCES sessions(id),
+                  status TEXT NOT NULL DEFAULT 'draft',
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX idx_blog_posts_updated ON blog_posts(updated_at);
+                """)
+        }
+
         return migrator
     }
 
@@ -355,6 +373,27 @@ final class AppDatabase {
     func deleteTrade(id: String) throws {
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM trades WHERE id = ?", arguments: [id])
+        }
+    }
+
+    // MARK: - Blog posts
+
+    /// Every post, most recently touched first — the blog list.
+    func allBlogPosts() throws -> [BlogPostRecord] {
+        try dbQueue.read { db in
+            try BlogPostRecord
+                .order(Column("updated_at").desc)
+                .fetchAll(db)
+        }
+    }
+
+    func save(_ post: BlogPostRecord) throws {
+        try dbQueue.write { db in try post.save(db) }
+    }
+
+    func deleteBlogPost(id: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM blog_posts WHERE id = ?", arguments: [id])
         }
     }
 

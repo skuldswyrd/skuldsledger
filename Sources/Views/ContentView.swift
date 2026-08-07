@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showSettleDay = false
     @State private var showAnalytics = false
+    @State private var showBlog = false
     @State private var showNewSession = false
     @State private var newSessionName = ""
     @State private var newSessionInstrument: Instrument = .NQ
@@ -48,6 +49,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showAnalytics) {
                 AnalyticsView()
+            }
+            .sheet(isPresented: $showBlog) {
+                BlogView()
             }
             .toolbar {
                 // Always visible — pre-session setup included: session
@@ -108,6 +112,14 @@ struct ContentView: View {
                 }
                 ToolbarItem(placement: .navigation) {
                     TVStatusControl()
+                }
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        showBlog = true
+                    } label: {
+                        Label("Blog", systemImage: "text.book.closed")
+                    }
+                    .help("Skuldswyrd Online Edition — write posts while trading, pull session notes, export markdown")
                 }
                 ToolbarItem(placement: .automatic) {
                     Button {
