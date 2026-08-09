@@ -1,3 +1,28 @@
+# SKULD 2.9.0 — CONSISTENCY: LAST FIXED TICKS DIE · TWAP (2026-08-07)
+
+Primary chart of record moves to **30-minute** (his call — 1/5/15m
+historically noisy; levels provide the entry precision, the bar TF provides
+signal quality). No code switch needed: 30m < the 1H structure threshold =
+execution mode, and every bar-based window (reaction, validity, cooldown,
+velocity) scales with the chart automatically.
+
+- **Outcome stamps now print the ticket's own distances** (from the actual
+  planE/T1/S prices) instead of hardcoded 32/48 ticks — fixes "TP ✓ +32t"
+  printing under a taller un-hit T1 line.
+- **APP demoted to advisory**: dim label + one-shot per level; no ticket, no
+  plan lines, no signal count, no alert. It was the last play still emitting
+  fixed-tick E/S/T — the root of the mixed-target confusion. A chase has no
+  structure behind entry; the reaction AT the level (MR/BRT) is the trade.
+- **Session TWAP added**: time-weighted average price since session open;
+  dim line beside VWAP + rank-6 pool level (toggle, default ON). VWAP+TWAP
+  agreeing = one strong magnet; split wide = trend tell.
+- **TUNE debug row** shows regime truth (dATR · cluster width · tier);
+  target/stop tick inputs relabeled **LEGACY seeds** (width seed + MR
+  touch-band geometry only — never trade prices).
+
+Output budget: 10 plots + 6 alertconditions + 1 bgcolor = 17 calls (≈34
+units of the ~64-unit overlay budget).
+
 # SKULD 2.8.0 — BRT JOINS THE VOICE · DECK-SPEC HUD (2026-08-07)
 
 Title: "SKULD 2.8 — Dynamic Targeting · MR + IB + BRT".
