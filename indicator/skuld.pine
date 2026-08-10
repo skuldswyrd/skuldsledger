@@ -5,6 +5,15 @@
 //  precision; the bar TF gives the signal QUALITY. Everything bar-based
 //  scales with the chart: reaction window, validity, cooldown, velocity).
 //
+//  v2.9.3 (2026-08-10): TARGETS ARE LEVELS, PERIOD.
+//   · Open-field fallback (entry ± tpCap×dATR) removed — no qualifying
+//     level ahead = NO TRADE. Every T1 is the front edge of a real level.
+//   · Believability cap: the target level must sit within inTpMaxT ticks
+//     (default 100). Farther = no trade; the target is never truncated to
+//     a mid-air price.
+//   · HUD SIGNAL block gains a FROM row — the level that produced the
+//     signal, gold, full text in the tooltip. ROOM row prints "no lvl"
+//     when a side has no reachable target level.
 //  v2.9.2 (2026-08-10): BRT GROWS UP — a wick through VWAP is not a
 //     break-retest. Break now requires ACCEPTANCE (inAcc consecutive closes
 //     beyond the escape margin, IB's standard, signed counter per cluster);
@@ -443,6 +452,7 @@ float inEntryOff = input.float(0.25, "Entry offset into zone (× cluster width)"
 float inTpStand  = input.float(0.10, "TP1 standoff (× cluster width, min 1 tick)", minval = 0.0, step = 0.05, group = GTC, tooltip = "TP1 lands this far IN FRONT of the first opposing qualifying cluster — never through it. See money, take money.")
 float inMinR     = input.float(0.7, "Min R (tpDist ≥ minR × stopDist)", minval = 0.1, step = 0.05, group = GTC)
 int   inValidBars = input.int(10, "Signal valid (bars)", minval = 1, maxval = 50, group = GTC, tooltip = "After this many bars the emitted prices are stale; a new signal supersedes.")
+int   inTpMaxT   = input.int(100, "TP1 max distance (ticks)", minval = 10, maxval = 400, group = GTC, tooltip = "The believability cap: a target level farther than this is not a real trade signal. The level must sit inside this range — the target is never truncated to a mid-air price.")
 
 // ── SIGNAL GATES ── don't fight a freight train into the level
 int   inApprBars = input.int(5, "Initiative: velocity window (bars)", minval = 2, maxval = 20, group = GSG)
@@ -1230,14 +1240,16 @@ f_construct(int i, int dir, float dAtrP) =>
                     if f_poolScore(q, dir) >= f_tierTrd()
                         qDist := dd
                         qFront := front
+    // 2.9.3: T1 is a LEVEL or there is no trade. The open-field fallback
+    // (entry ± tpCap×dATR) is gone — a math price nobody defends is not a
+    // target. The level must also sit within the believable range (input,
+    // 100t default) AND the regime cap.
     float tp = na
-    if not na(qFront) and qDist <= f_tierTpCap() * dAtrP
+    if not na(qFront) and qDist <= f_tierTpCap() * dAtrP and qDist <= inTpMaxT * syminfo.mintick
         tp := qFront - dir * math.max(syminfo.mintick, inTpStand * wNow)
-    else
-        tp := entry + dir * f_tierTpCap() * dAtrP
     float tpD = (tp - entry) * dir
-    bool ok = stopD > 0 and tpD >= math.max(inMinR * stopD, f_tierTpFloor() * dAtrP)
-    [entry, stop, tp, tpD / math.max(stopD, syminfo.mintick), ok]
+    bool ok = not na(tp) and stopD > 0 and tpD >= math.max(inMinR * stopD, f_tierTpFloor() * dAtrP)
+    [entry, stop, tp, na(tp) ? na : tpD / math.max(stopD, syminfo.mintick), ok]
 
 // ── DAY TYPE · APPROACH · STAMP state ──────────────────────────────────────
 // delta series shared by everything (assigned each confirmed bar)
@@ -2739,7 +2751,7 @@ var table hud = table(na)
 if showDash and not showDebugHud and barstate.islast
     if not na(hud)
         table.delete(hud)
-    hud := table.new(f_dashPos(), 4, 5, bgcolor = color.new(#0d0d10, 6), frame_width = 1, frame_color = color.new(#673ab7, 45))
+    hud := table.new(f_dashPos(), 4, 6, bgcolor = color.new(#0d0d10, 6), frame_width = 1, frame_color = color.new(#673ab7, 45))
     color hOk = #00ff00
     color hBad = #ef5350
     color hDim = #787b86
@@ -2770,9 +2782,15 @@ if showDash and not showDebugHud and barstate.islast
         table.cell(hud, 1, 3, str.tostring(sigT, format.mintick), text_color = hOk, text_size = size.large, text_halign = text.align_right, bgcolor = hCard)
         table.cell(hud, 2, 3, "R", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)
         table.cell(hud, 3, 3, str.tostring(sigR, "#.#"), text_color = hCyn, text_size = size.large, text_halign = text.align_right, bgcolor = hCard)
-        table.cell(hud, 0, 4, "VALID", text_color = hDim, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
-        table.cell(hud, 1, 4, vTxt, text_color = leftBars <= 2 ? hAmb : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
-        table.merge_cells(hud, 1, 4, 3, 4)
+        // FROM — the level that produced this signal (2.9.3)
+        string fromTxt = sigLvlTxt
+        if str.length(fromTxt) > 42
+            fromTxt := str.substring(fromTxt, 0, 41) + "…"
+        table.cell(hud, 0, 4, "FROM " + fromTxt, text_color = hGold, text_size = size.small, text_halign = text.align_left, bgcolor = hCard, tooltip = sigLvlTxt)
+        table.merge_cells(hud, 0, 4, 3, 4)
+        table.cell(hud, 0, 5, "VALID", text_color = hDim, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
+        table.cell(hud, 1, 5, vTxt, text_color = leftBars <= 2 ? hAmb : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
+        table.merge_cells(hud, 1, 5, 3, 5)
     else if not htfMode
         // ── WAITING ── nearest qualifying level each side
         int upIdx = -1
@@ -2806,11 +2824,11 @@ if showDash and not showDebugHud and barstate.islast
             if dnIdx >= 0
                 [rlE, rlS, rlT, rlR, rlOk] = f_construct(dnIdx, 1, dAtr)
                 roomL := rlOk
-                roomLt := int(math.round((rlT - rlE) / syminfo.mintick))
+                roomLt := na(rlT) ? -1 : int(math.round((rlT - rlE) / syminfo.mintick))
             if upIdx >= 0
                 [rsE, rsS, rsT, rsR, rsOk] = f_construct(upIdx, -1, dAtr)
                 roomS := rsOk
-                roomSt := int(math.round((rsE - rsT) / syminfo.mintick))
+                roomSt := na(rsT) ? -1 : int(math.round((rsE - rsT) / syminfo.mintick))
         // ▲ = short zone (purple) · ▼ = long zone (green), deck columns:
         // side+name · price · +dist · score
         table.cell(hud, 0, 1, upIdx < 0 ? "▲ —" : "▲ " + f_shortNm(poolName.get(upIdx)), text_color = upIdx < 0 ? hDim : colDn, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard, tooltip = upIdx < 0 ? "" : poolName.get(upIdx))
@@ -2822,8 +2840,8 @@ if showDash and not showDebugHud and barstate.islast
         table.cell(hud, 2, 2, dnIdx < 0 ? "" : "-" + str.tostring(math.round(dnD / syminfo.mintick)) + "t", text_color = hDim, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
         table.cell(hud, 3, 2, dnIdx < 0 ? "" : str.tostring(math.round(dnEff, 1)) + "★", text_color = hGold, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
         table.cell(hud, 0, 3, "ROOM", text_color = hCyn, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
-        table.cell(hud, 1, 3, dnIdx < 0 ? "L —" : "L " + (roomL ? "OK·" : "✗·") + str.tostring(roomLt) + "t", text_color = dnIdx < 0 ? hDim : roomL ? hOk : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
-        table.cell(hud, 2, 3, upIdx < 0 ? "S —" : "S " + (roomS ? "OK·" : "✗·") + str.tostring(roomSt) + "t", text_color = upIdx < 0 ? hDim : roomS ? hOk : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 1, 3, dnIdx < 0 ? "L —" : "L " + (roomL ? "OK·" : "✗·") + (roomLt < 0 ? "no lvl" : str.tostring(roomLt) + "t"), text_color = dnIdx < 0 ? hDim : roomL ? hOk : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 2, 3, upIdx < 0 ? "S —" : "S " + (roomS ? "OK·" : "✗·") + (roomSt < 0 ? "no lvl" : str.tostring(roomSt) + "t"), text_color = upIdx < 0 ? hDim : roomS ? hOk : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
         table.cell(hud, 3, 3, "", text_color = hDim, text_size = size.small, bgcolor = hCard)
     else
         // ── STRUCTURE ──
