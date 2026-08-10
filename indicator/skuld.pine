@@ -5,6 +5,14 @@
 //  precision; the bar TF gives the signal QUALITY. Everything bar-based
 //  scales with the chart: reaction window, validity, cooldown, velocity).
 //
+//  v2.9.2 (2026-08-10): BRT GROWS UP — a wick through VWAP is not a
+//     break-retest. Break now requires ACCEPTANCE (inAcc consecutive closes
+//     beyond the escape margin, IB's standard, signed counter per cluster);
+//     the retest requires SEPARATION (min bars after the accepted break),
+//     DEPTH (low reaches within half a cluster width of the level),
+//     REJECTION (MR's close-position standard on the retest bar) and an
+//     EffScore ≥ the regime trade floor from the approach side. Chop that
+//     pokes one close through and dips a wick no longer fires.
 //  v2.9.1 (2026-08-10): SIGNAL LIFECYCLE — a ticket is a resting limit,
 //     track it like one. Fill (price returns to E) must happen before SL/TP
 //     count — unfilled tickets can no longer stamp "TP ✓". Price tags T1
@@ -306,6 +314,7 @@ bool  inclON   = input.bool(true, "Include ONH/ONL (rank 6)", group = GR)
 bool  enBRT     = input.bool(true, "Enable BRT play (break-retest)", group = GB, tooltip = "ON since 2.8 — broken level retested from the other side and held. Fires through the same dynamic construction and alerts as MR/IB. Trend-day continuation entries AT structure.")
 float inBrtEsc  = input.float(0.0, "Break margin pts (0 = auto: cluster width)", minval = 0, group = GB)
 int   inBrtWatch = input.int(20, "Retest watch window (bars)", minval = 2, maxval = 100, group = GB)
+int   brtMinGap  = input.int(3, "Retest: min bars after break", minval = 1, maxval = 20, group = GB, tooltip = "The retest cannot fire until this many bars after the break is ACCEPTED — separation is what makes it a retest instead of the same chop that faked the break.")
 
 bool  enAPP        = input.bool(true, "APP advisory (ride toward a wall)", group = GA, tooltip = "ADVISORY since 2.9 — dim label when a with-move ride into a powerful level sets up. No ticket, no alert, no count: a chase has no structure behind the entry, so it gets a read, not numbers. The reaction AT the level is the next decision (usually an MR or BRT).")
 int   inAppRank    = input.int(8, "Min rank of destination level", minval = 4, maxval = 30, group = GA)
@@ -910,6 +919,9 @@ var array<int>    clS  = array.new<int>()
 var array<string> clN  = array.new<string>()
 var array<int>    clSt = array.new<int>()
 var array<int>    clEB = array.new<int>()
+// BRT break-acceptance counter per cluster (2.9.2): signed consecutive
+// closes beyond the escape margin (+above / -below); reset on recluster.
+var array<int>    clAcc = array.new<int>()
 var bool needCl = false
 // anchors for profile histogram + dev lines
 var int dT0 = na
@@ -1491,6 +1503,7 @@ if barstate.isconfirmed
             clustWv := inClW > 0 ? inClW : clustW
     if needCl
         f_clusters(priorW, priorD, priorA, priorL, priorN, not htfMode, clustWv, clP, clR, clS, clN, clSt, clEB, clTch, clStB, clStV, clLoT, clHiT, clMemA, clMemN, memKey, memRank, memScope)
+        clAcc := array.new<int>(clP.size(), 0)
         needCl := false
     // ── developing levels — the LIVE read, refreshed every confirmed close ──
     if inRTH
@@ -2230,18 +2243,33 @@ if barstate.isconfirmed and not htfMode
                 int st = clSt.get(i)
                 float p = clP.get(i)
                 if st == 0
-                    if close > p + brtEsc and cPrev <= p + brtEsc
+                    // 2.9.2: a BREAK is ACCEPTANCE (inAcc consecutive closes
+                    // beyond the escape margin, same standard as IB) — one
+                    // close poking through is chop, and chop was firing
+                    // wick-through-VWAP "retests" that were nothing.
+                    int acc = i < clAcc.size() ? clAcc.get(i) : 0
+                    acc := close > p + brtEsc ? math.max(acc, 0) + 1 : close < p - brtEsc ? math.min(acc, 0) - 1 : 0
+                    if i < clAcc.size()
+                        clAcc.set(i, acc)
+                    if acc >= inAcc
                         clSt.set(i, 1)
                         clEB.set(i, bar_index)
-                    else if close < p - brtEsc and cPrev >= p - brtEsc
+                    else if acc <= -inAcc
                         clSt.set(i, 2)
                         clEB.set(i, bar_index)
                 else if st == 1
                     if close < p
                         clSt.set(i, 0)
+                        if i < clAcc.size()
+                            clAcc.set(i, 0)
                     else if bar_index - clEB.get(i) > inBrtWatch
                         clSt.set(i, 3)
-                    else if low <= p + mrTol and close > p and gate and fireDir == 0 and not na(dAtr) and i < poolP.size()
+                    // retest quality (2.9.2): separation from the break
+                    // (min gap bars) + depth (low reaches within half a
+                    // cluster width of the level) + rejection close (same
+                    // wick standard as MR) + EffScore ≥ the regime trade
+                    // floor from the approach side.
+                    else if bar_index - clEB.get(i) >= brtMinGap and low <= p + clustWv * 0.5 and close > p and cPos >= inWick and gate and fireDir == 0 and not na(dAtr) and i < poolP.size() and f_poolScore(i, -1) >= f_tierTrd()
                         // 2.8: BRT fires through dynamic construction —
                         // pool idx == cluster idx for cluster items. Room
                         // fails → NOTRADE, state stays 1 so a later retest
@@ -2264,9 +2292,11 @@ if barstate.isconfirmed and not htfMode
                 else if st == 2
                     if close > p
                         clSt.set(i, 0)
+                        if i < clAcc.size()
+                            clAcc.set(i, 0)
                     else if bar_index - clEB.get(i) > inBrtWatch
                         clSt.set(i, 3)
-                    else if high >= p - mrTol and close < p and gate and fireDir == 0 and not na(dAtr) and i < poolP.size()
+                    else if bar_index - clEB.get(i) >= brtMinGap and high >= p - clustWv * 0.5 and close < p and cPos <= 1 - inWick and gate and fireDir == 0 and not na(dAtr) and i < poolP.size() and f_poolScore(i, 1) >= f_tierTrd()
                         [be2, bs2, bt2, br2, bOk2] = f_construct(i, -1, dAtr)
                         if bOk2
                             clSt.set(i, 3)
