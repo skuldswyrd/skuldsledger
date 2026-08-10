@@ -1,3 +1,12 @@
+# SKULD 2.9.1 — SIGNAL LIFECYCLE (2026-08-10)
+
+- Ticket tracked as the resting limit it is: FILL (price returns to E) required
+  before SL/TP outcomes count — unfilled tickets can no longer stamp "TP ✓".
+- Price tags T1 without filling → dim "RAN — unfilled" stamp, ticket + HUD
+  signal clear immediately; HUD returns to WAITING with the next levels
+  (no more stale BUY block over a finished move).
+- Session-gap exit clears the HUD signal too.
+
 # SKULD 2.9.0 — CONSISTENCY: LAST FIXED TICKS DIE · TWAP (2026-08-07)
 
 Primary chart of record moves to **30-minute** (his call — 1/5/15m

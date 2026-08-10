@@ -5,6 +5,13 @@
 //  precision; the bar TF gives the signal QUALITY. Everything bar-based
 //  scales with the chart: reaction window, validity, cooldown, velocity).
 //
+//  v2.9.1 (2026-08-10): SIGNAL LIFECYCLE — a ticket is a resting limit,
+//     track it like one. Fill (price returns to E) must happen before SL/TP
+//     count — unfilled tickets can no longer stamp "TP ✓". Price tags T1
+//     without filling = "RAN — unfilled" dim stamp, ticket AND HUD signal
+//     clear instantly (WAITING shows the next levels instead of a stale
+//     BUY block screaming over a finished move). Session-gap exit also
+//     clears the HUD.
 //  v2.9.0 (2026-08-07): CONSISTENCY — the last fixed ticks die · TWAP.
 //   · Outcome stamps print the TICKET'S OWN distances (planE/T1/S ticks),
 //     not the legacy 32/48 — no more "TP ✓ +32t" under a taller T1 line.
@@ -948,6 +955,7 @@ var int planDir = 0
 var float planSp = na
 var float planTp = na
 var float planEp = na
+var bool planFilled = false
 var bool planOn = false
 // imbalance zones (footprint proxy) — parallel arrays, newest last
 var array<box>   imbBx  = array.new<box>()
@@ -2360,28 +2368,46 @@ if barstate.isconfirmed and not htfMode
             planSp := ps
             planTp := pt
             planEp := pe
+            planFilled := false
             planOn := true
     // manage the live plan: extend with price, terminate + stamp outcome on hit
+    // 2.9.1 SIGNAL LIFECYCLE — the ticket is a RESTING LIMIT; track it like
+    // one. Fill first (price returns to E), then SL/TP. Price tags T1 without
+    // ever filling = the move left without you: kill ticket AND HUD signal
+    // instantly (back to WAITING, next levels showing) with a dim RAN stamp.
+    // No fill = no win/loss — unfilled tickets can no longer stamp "TP ✓".
     if planOn and fireDir == 0
         line.set_x2(planE, time)
         line.set_x2(planS, time)
         line.set_x2(planT, time)
+        bool fillHit = planDir > 0 ? low <= planEp : high >= planEp
         bool slHit = planDir > 0 ? low <= planSp : high >= planSp
         bool tpHit = planDir > 0 ? high >= planTp : low <= planTp
-        if slHit or tpHit
+        if not planFilled and not fillHit and tpHit
+            // ran to target unfilled — money train left the station
             planOn := false
+            sigDir := 0
             if not na(planRes)
                 label.delete(planRes)
-            bool win = tpHit and not slHit
-            // 2.9: stamp the TICKET'S OWN distances, not the legacy fixed
-            // ticks — targets are dynamic, the outcome label must match the
-            // lines it sat between.
-            int tpTk = int(math.round(math.abs(planTp - nz(planEp, planTp)) / syminfo.mintick))
-            int slTk = int(math.round(math.abs(nz(planEp, planSp) - planSp) / syminfo.mintick))
-            string resTxt = slHit and tpHit ? "TP+SL same bar — check" : win ? "TP ✓ +" + str.tostring(tpTk) + "t" : "SL ✗ -" + str.tostring(slTk) + "t"
-            planRes := label.new(time, win ? planTp : planSp, resTxt, xloc = xloc.bar_time, style = win ? label.style_label_up : label.style_label_down, color = color.new(win ? colUp : colStop, 20), textcolor = win ? color.black : color.white, size = size.small)
-        else if not inAnySess
-            planOn := false
+            planRes := label.new(time, planTp, "RAN — unfilled", xloc = xloc.bar_time, style = planDir > 0 ? label.style_label_down : label.style_label_up, color = color.new(#0d0d10, 40), textcolor = #787b86, size = size.small, tooltip = "Price hit T1 before ever returning to the entry limit. No trade — signal cleared.")
+        else
+            if fillHit
+                planFilled := true
+            if planFilled and (slHit or tpHit)
+                planOn := false
+                sigDir := 0
+                if not na(planRes)
+                    label.delete(planRes)
+                bool win = tpHit and not slHit
+                // stamp the TICKET'S OWN distances — the outcome label must
+                // match the lines it sat between
+                int tpTk = int(math.round(math.abs(planTp - nz(planEp, planTp)) / syminfo.mintick))
+                int slTk = int(math.round(math.abs(nz(planEp, planSp) - planSp) / syminfo.mintick))
+                string resTxt = slHit and tpHit ? "TP+SL same bar — check" : win ? "TP ✓ +" + str.tostring(tpTk) + "t" : "SL ✗ -" + str.tostring(slTk) + "t"
+                planRes := label.new(time, win ? planTp : planSp, resTxt, xloc = xloc.bar_time, style = win ? label.style_label_up : label.style_label_down, color = color.new(win ? colUp : colStop, 20), textcolor = win ? color.black : color.white, size = size.small)
+            else if not inAnySess
+                planOn := false
+                sigDir := 0
 
 // ── PLOTS ──────────────────────────────────────────────────────────────────
 plot(showVwap and not htfMode ? vwapV : na, "VWAP", color = colVwap, linewidth = 2, style = plot.style_linebr)
