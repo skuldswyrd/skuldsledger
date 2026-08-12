@@ -2,14 +2,17 @@ import Foundation
 import AppKit
 import Vision
 
-/// A ranked cluster read off the live TradingView chart (Skuld Unified
-/// labels — v2 score format "[12] pdH+NY H  29192.50 · 3.50", v1 star
-/// format "★★★★★ pdH+NY H  29192.50 · 3.50").
+/// A ranked cluster read off the live TradingView chart. SKULD label formats
+/// by era, all parsed:
+///  · 2.6+ execution — "NAME ◆ 29622.75 · 547t · 11.5★ · 1H/0B"
+///    (EffScore ★ + directional record; ◆ = imbalance-zone tag)
+///  · v2 score       — "[12] pdH+NY H  29192.50 · 3.50"
+///  · v1 stars       — "★★★★★ pdH+NY H  29192.50 · 3.50"
 struct ChartLevel: Equatable {
     let name: String
     let price: Double
     let stars: Int
-    /// Exact summed rank from the v2 score labels; nil on legacy ★ labels.
+    /// Rounded EffScore (2.6+) / exact summed rank (v2); nil on v1 ★ labels.
     let rank: Int?
 }
 
@@ -82,7 +85,10 @@ final class LevelSyncService {
         guard let cli = Self.locateCLI() else { return .failure(.cliNotFound) }
 
         let output: String
-        switch await runProcess(cli: cli, args: ["data", "labels", "-f", "Skuld", "-n", "60"], timeout: 20) {
+        // Filter "kuld" matches every title era — "Skuld Unified v2.x" AND the
+        // all-caps "SKULD 2.6+" (a case-sensitive "Skuld" filter went blind
+        // the day the title changed).
+        switch await runProcess(cli: cli, args: ["data", "labels", "-f", "kuld", "-n", "60"], timeout: 20) {
         case .success(let out): output = out
         case .failure(let err): return .failure(err)
         }
@@ -109,11 +115,33 @@ final class LevelSyncService {
         return levels.isEmpty ? .failure(.noLevels) : .success(levels)
     }
 
-    /// "[12] AS VAH+AS H  29154.75 · 34.25" -> (rank 12, stars band 5, price 29154.75).
-    /// Legacy "★★★★ name  price · dist" still parses (rank nil). Other labels
-    /// (trade plans, TP/SL stamps) are skipped. Price comes from the label TEXT
-    /// (exact level); the label's y-price drifts and is only a fallback.
+    /// Parses every SKULD label era (see ChartLevel doc). Other labels
+    /// (trade plans, TP/SL stamps, REACT, APP) are skipped. Price comes from
+    /// the label TEXT (exact level); the label's y-price drifts and is only
+    /// a fallback.
     static func parseClusterLabel(_ text: String, fallbackPrice: Double?) -> ChartLevel? {
+        // 2.6+ execution format first — it's what the live chart draws now:
+        // "NAME ◆ 29622.75 · 547t · 11.5★ · 1H/0B" (price omitted when the
+        // showPx input is off; ◆ optional).
+        if !text.hasPrefix("["), !text.hasPrefix("★") {
+            let parts = text.components(separatedBy: "·").map { $0.trimmingCharacters(in: .whitespaces) }
+            if parts.count >= 3, let scorePart = parts.first(where: { $0.hasSuffix("★") }),
+               let score = Double(scorePart.dropLast().trimmingCharacters(in: .whitespaces)) {
+                var head = parts[0]
+                var price: Double?
+                if let lastSpace = head.range(of: " ", options: .backwards) {
+                    let tail = head[lastSpace.upperBound...].replacingOccurrences(of: ",", with: "")
+                    if let p = Double(tail) {
+                        price = p
+                        head = String(head[..<lastSpace.lowerBound])
+                    }
+                }
+                let name = head.replacingOccurrences(of: "◆", with: "").trimmingCharacters(in: .whitespaces)
+                guard let finalPrice = price ?? fallbackPrice, !name.isEmpty else { return nil }
+                let rank = Int(score.rounded())
+                return ChartLevel(name: name, price: finalPrice, stars: starBand(rank), rank: rank)
+            }
+        }
         var stars = 0
         var rank: Int?
         var rest: String
@@ -198,6 +226,7 @@ final class LevelSyncService {
             "pdPOC", "pwPOC", "pdVAH", "pdVAL", "pwVAH", "pwVAL", "pdLVN", "pwLVN",
             "pdHVN", "pwHVN", "pdH", "pdL", "pwH", "pwL", "VWAP", "sPOC", "sVAH",
             "sVAL", "dPOC", "dVAH", "dVAL", "ONH", "ONL", "IBH", "IBL",
+            "TWAP", "sesH", "sesL",
             "NY POC", "NY VAH", "NY VAL", "AS POC", "AS VAH", "AS VAL",
             "LDN POC", "LDN VAH", "LDN VAL", "NY H", "NY L", "AS H", "AS L",
         ]
@@ -232,7 +261,7 @@ final class LevelSyncService {
         var line = raw.trimmingCharacters(in: .whitespaces)
             .replacingOccurrences(of: ",", with: "")
         // Level lines start after the drawn line's OCR artifacts.
-        while let f = line.first, "-—–|•·~_ ".contains(f) { line.removeFirst() }
+        while let f = line.first, "-—–|•·~_ ▲▼".contains(f) { line.removeFirst() }
 
         var rank: Int?
         var rest: String
@@ -244,6 +273,13 @@ final class LevelSyncService {
             let stars = line.prefix(while: { $0 == "★" }).count
             rank = [1: 1, 2: 4, 3: 6, 4: 8, 5: 10][min(5, max(1, stars))]
             rest = String(line.dropFirst(stars))
+        } else if line.contains("★"),
+                  let sm = line.range(of: #"(\d{1,2}(?:\.\d)?)\s?★"#, options: .regularExpression) {
+            // 2.6+ execution format: "NAME 29622.75 - 547t - 11.5★ - 1H/0B"
+            // ("·" often OCRs as "-"). Score → rank; price found below.
+            let scoreTok = line[sm].dropLast().trimmingCharacters(in: .whitespaces)
+            rank = Int((Double(scoreTok) ?? 1).rounded())
+            rest = String(line[..<sm.lowerBound])
         } else {
             return nil
         }

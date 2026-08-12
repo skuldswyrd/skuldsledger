@@ -1,0 +1,677 @@
+//@version=6
+//══════════════════════════════════════════════════════════════════════════════
+//  HITLIST v1.3 — Up/Down Target Game (2026-08-11)
+//
+//  v1.3: SHOT CARD — SKULD's targeting, toned down. A scored hold (✓/◆)
+//        with ROOM prints a live trade card: dashed white E = resting limit
+//        at the retest · red S = stop beyond the level (behind the sweep
+//        wick on traps) · green T = front edge of the next opposing level
+//        (targets are levels, period) · R tag (amber = against the day
+//        call). No opposing level in range or R under the floor = no card
+//        = no trade. Card resolves itself on bar closes: T first = gold
+//        PAID stamp · S first = red STOP stamp · runs to T unfilled or
+//        times out = quiet remove. Session W-L rides the verdict strip.
+//        ONE card at a time. SHOT alert carries E/S/T/R.
+//
+//  v1.2: ARROWS = THE TRADE. Every arrow now points the way you'd enter at
+//        that level: floor wears ▲ (look LONG there) · ceiling wears ▼ (look
+//        SHORT there) · a flipped level swaps its arrow. Applies to badges,
+//        race callouts, verdict strip and alerts. Arrow never means location.
+//        + VERDICT STRIP — scoreboard grid replaced with plain words. Top
+//        line = the day call (BOUNCE DAY / TREND DAY / CHOP · HALF SIZE /
+//        WARMING UP). Bottom = ▼/▲ side form (PAYING / FAILING / MIXED from
+//        the last 5 tests) + RUN streak + ◆ traps. No decoding required.
+//
+//  S/R as a shooting gallery. Price is the player. Levels are targets.
+//
+//  HOW TO PLAY
+//   · Targets above price = ceilings (old resistance). Targets below =
+//     floors (old support). Sources: chart-TF swing pivots + PDH/PDL + ONH/
+//     ONL (PD/ON seeds join at the close of the first session bar, strength
+//     2; ON seeds auto-off on 60m — hourly bars can't respect 09:30).
+//   · ARROW ON A LEVEL = THE TRADE THERE, never the location. ▲ = look LONG
+//     when price reaches it (floor). ▼ = look SHORT there (ceiling). After a
+//     break the level flips teams and its arrow flips with it — the retest
+//     trade is already pointed for you.
+//   · Price approaches a target → it ARMS: line brightens white and thickens,
+//     badge bullseye fills ◎→◉. The board tells you the shot is live.
+//   · Touch (within one tolerance) that HOLDS (close back on the origin side)
+//     = HIT. Green "✓ +1" chip stamps the touch at the level. Target survives,
+//     strength +1. A scored target re-arms only after price LEAVES its zone —
+//     no machine-gun points while price grinds a level.
+//     The chip confirms the arrow: ▲ floor held = ENTER UP · ▼ ceiling held
+//     = ENTER DOWN.
+//   · Wick pierces THROUGH the target, close reclaims = TRAP (2B / sweep-
+//     reclaim). Gold "◆ +2" chip at the sweep extreme. Double points — the
+//     stop run beyond the level is done.
+//   · A scored hold with room prints the SHOT CARD (E/S/T lines + R tag) —
+//     entry at the retest, stop past the level, target = the next level in
+//     the trade's way. PAID / STOP stamps close the loop; W-L in the strip.
+//   · Close accepted through = BREAK. Red "✗" chip, the old line dies as a
+//     short dotted scar, and the target RESPAWNS on the spot for the other
+//     team (S/R flip) wearing a FLIP tag — respawned targets spawn stronger.
+//     Chop guard: a fresh flip needs a double-width close to re-break, and
+//     two closes parked inside the break band = acceptance = break.
+//   · Verdict strip (corner) — reads itself, no legend needed:
+//       top line = the day call:  BOUNCE DAY (levels holding — hunt ✓/◆)
+//       · TREND DAY (levels breaking — only FLIP retests) · CHOP · HALF
+//       SIZE (coin flip) · WARMING UP (fewer than 3 tests yet).
+//       bottom = ▼ / ▲ form: is that trade PAYING, FAILING or MIXED over
+//       its last 5 tests (▼ = shorts at ceilings · ▲ = longs at floors)
+//       · RUN = consecutive holds · ◆ = traps today. Resets at session
+//       open. One touch scores ONE target per side — the nearest — even
+//       when bands overlap.
+//   · NEXT row at the right edge: nearest ceiling (▼) and floor (▲) with
+//     tick distance; the closer one is lit with ► — the whole game is which
+//     gets hit first. Arrow = the trade waiting at that level.
+//
+//  Strength pips ●●● = touches survived (cap 3). Line width = strength.
+//  Auto-scales per TF (1/5/15/30/60m): pivot lengths, tolerance (×ATR14),
+//  targets per side, hit cooldown.
+//
+//  Chart-type safe: drawings only (line/label/table, ZERO plot-family calls)
+//  → renders on Candles, Line, and Volume Footprint chart types alike.
+//  Anti-repaint: all scoring on confirmed bars; alerts once per bar close.
+//  Alerts: fire via alert() — create ONE alert with "Any alert() function
+//  call". Fixed 6-field pipe: HITLIST|EVENT|LEVEL|ENTER side|SYM|TIME
+//  where EVENT ∈ HIT ▲/▼ · TRAP ▲/▼ · BREAK ▲/▼ — event arrows point the
+//  trade direction, same as the chart. SHOT alerts (8 fields):
+//  HITLIST|SHOT ▲/▼|E px|S px|T px|R x.x|SYM|TIME.
+//══════════════════════════════════════════════════════════════════════════════
+indicator("HITLIST — Up/Down Target Game", "HITLIST", overlay = true, max_lines_count = 150, max_labels_count = 300)
+
+const string TZ = "America/New_York"
+
+//─────────────────────────────────────────────────────────────────── inputs ──
+const string G1 = "Targets"
+const string G2 = "Game rules"
+const string G3 = "Look"
+const string G4 = "Alerts"
+
+bool  seedPD   = input.bool(true,  "Seed PDH / PDL", group = G1, tooltip = "Yesterday's high/low join the board at the close of the first session bar (strength 2).")
+bool  seedON   = input.bool(true,  "Seed ONH / ONL", group = G1, tooltip = "Overnight high/low join the board at the close of the first session bar (strength 2). Auto-disabled on 60m charts — hourly bars cannot respect the 09:30 boundary.")
+int   extraL   = input.int(0,      "Extra targets per side", minval = 0, maxval = 8, group = G1, tooltip = "Added to the per-TF auto cap (1m:4 · 5m:4 · 15m:3 · 30m:3 · 60m:3 per side).")
+string onSess  = input.session("1800-0930", "Overnight window", group = G1, tooltip = "Times in America/New_York (ET), regardless of chart timezone.")
+string rthSess = input.session("0930-1600", "Session (scoreboard resets at open)", group = G1, tooltip = "Times in America/New_York (ET), regardless of chart timezone.")
+
+float inBrkX   = input.float(0.50, "Break: close beyond (× tolerance)", minval = 0.1, maxval = 2, step = 0.05, group = G2, tooltip = "Close this far through a target = BREAK → destroy + flip respawn. A fresh flip (20 bars) needs DOUBLE this to re-break; 2 consecutive closes parked inside the band also count as a break (acceptance).")
+float inTrapX  = input.float(0.75, "Trap: min pierce (× tolerance)", minval = 0.1, maxval = 3, step = 0.05, group = G2, tooltip = "Wick must pierce at least this far past the level (then reclaim) to score ◆ +2 instead of ✓ +1. A prior close through that reclaims also counts as a trap.")
+float inArmX   = input.float(3.0,  "Arm distance (× tolerance)", minval = 1, maxval = 10, step = 0.5, group = G2, tooltip = "Price within this range lights the target up. A scored target must see price leave this zone before it can score again.")
+
+bool  cbMode   = input.bool(false, "Colorblind-safe palette", group = G3, tooltip = "Hit → blue, break → orange. Glyphs already differ (✓ ✗ ◆) so the board reads desaturated either way.")
+int   badgeOff = input.int(6,      "Badge offset (bars right)", minval = 1, maxval = 20, group = G3)
+bool  showScar = input.bool(true,  "Show break scars (20 bars)", group = G3)
+bool  showNext = input.bool(true,  "Show NEXT target race", group = G3)
+int   maxStamp = input.int(120,    "Stamp history (chips kept)", minval = 20, maxval = 200, group = G3)
+string dashPos = input.string("Top right", "Scoreboard corner", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = G3)
+
+bool  alHit    = input.bool(true, "Alert: HIT",   group = G4)
+bool  alTrap   = input.bool(true, "Alert: TRAP",  group = G4)
+bool  alBrk    = input.bool(true, "Alert: BREAK", group = G4)
+bool  alShot   = input.bool(true, "Alert: SHOT (E/S/T/R)", group = G4)
+
+const string G5 = "Shot card (targeting)"
+bool  enCard   = input.bool(true, "Draw shot card on HIT / TRAP", group = G5, tooltip = "SKULD-style construction, toned down: E = resting limit at the retest · S = stop beyond the level (behind the sweep wick on traps) · T = front edge of the next opposing level. Targets are levels, period — no opposing level in range or R under the floor = no card = no trade. One card at a time; PAID / STOP stamps resolve it, W-L rides the verdict strip.")
+float inMinR   = input.float(0.8, "Min R to print a card", minval = 0.1, maxval = 5, step = 0.1, group = G5)
+float inTpCapA = input.float(6.0, "Max target distance (× ATR14)", minval = 1, maxval = 20, step = 0.5, group = G5, tooltip = "Opposing level farther than this = no believable target = no card.")
+int   inCardBars = input.int(30, "Card timeout (bars)", minval = 5, maxval = 200, group = G5)
+
+//──────────────────────────────────────────────── per-TF auto-scaling table ──
+// 1m: 15/5 · 5m: 12/4 · 15m: 10/3 · 30m: 8/3 · 60m+: 6/2 (pivot L/R)
+int _m = timeframe.isintraday ? timeframe.multiplier : 60
+int pivL = _m <= 1 ? 15 : _m <= 5 ? 12 : _m <= 15 ? 10 : _m <= 30 ? 8 : 6
+int pivR = _m <= 1 ? 5 : _m <= 5 ? 4 : _m <= 15 ? 3 : _m <= 30 ? 3 : 2
+float tolF = _m <= 1 ? 0.25 : _m <= 5 ? 0.30 : _m <= 15 ? 0.35 : _m <= 30 ? 0.40 : 0.50
+int maxL = (_m <= 5 ? 4 : 3) + extraL
+int cdB  = _m <= 1 ? 15 : _m <= 5 ? 6 : _m <= 15 ? 4 : _m <= 30 ? 3 : 2
+
+float atrV = ta.atr(14)
+float tol  = math.max(nz(atrV) * tolF, syminfo.mintick * 2)
+float brkT  = tol * inBrkX
+float trapT = tol * inTrapX
+float armT  = tol * inArmX
+int   barMs = timeframe.in_seconds(timeframe.period) * 1000
+
+//──────────────────────────────────────────────────────────────────── colors ──
+color COL_NEU  = #b2b5be
+color COL_ARM  = #ffffff
+color COL_HIT  = cbMode ? #2962ff : #00e676
+color COL_BRK  = cbMode ? #ff9800 : #ff5252
+color COL_TRP  = #ffd54f
+color COL_CARD = #131722
+color COL_DIM  = #787b86
+
+//──────────────────────────────────────────────────────────────── sessions ──
+bool inRTH  = not na(time(timeframe.period, rthSess, TZ))
+bool inON   = not na(time(timeframe.period, onSess, TZ))
+bool newRTH = inRTH and not inRTH[1]
+bool onEnd  = inON[1] and not inON
+
+var float onHi  = na
+var float onLo  = na
+var float onHiF = na
+var float onLoF = na
+if inON and not inON[1]
+    onHi := high
+    onLo := low
+if inON
+    onHi := math.max(nz(onHi, high), high)
+    onLo := math.min(nz(onLo, low), low)
+if onEnd
+    onHiF := onHi
+    onLoF := onLo
+
+// prior day H/L — yesterday's COMPLETED values, constant all day, no repaint
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+
+//──────────────────────────────────────────────────── board state arrays ──
+// one target = one index across all of these (parallel arrays, no UDTs)
+var array<float>  tP    = array.new<float>()   // price
+var array<int>    tSide = array.new<int>()     // 1 = ▲ UP target · -1 = ▼ DOWN target
+var array<int>    tStr  = array.new<int>()     // strength 1..3
+var array<int>    tBorn = array.new<int>()     // birth time (ms) — line x1
+var array<int>    tCd   = array.new<int>()     // scoring cooldown until bar
+var array<int>    tFlip = array.new<int>()     // FLIP badge / hysteresis until bar
+var array<bool>   tRdy  = array.new<bool>()    // re-armed: price left the zone since last score
+var array<int>    tInB  = array.new<int>()     // consecutive closes parked inside the break band
+var array<string> tNm   = array.new<string>()  // P / PDH / PDL / ONH / ONL
+
+// break scars (persistent, self-pruning) + stamp chips (FIFO)
+var array<line>  scLn    = array.new<line>()
+var array<int>   scUntil = array.new<int>()
+var array<label> stamps  = array.new<label>()
+
+// render pool — deleted + rebuilt every islast pass
+var array<line>  rLn = array.new<line>()
+var array<label> rLb = array.new<label>()
+
+// scoreboard (session)
+var int hitUp   = 0
+var int hitDn   = 0
+var int trapCnt = 0
+var int holdCnt = 0
+var int brkCnt  = 0
+var int streak  = 0
+var array<int> upLights = array.new<int>()   // per UP-target outcome: 0 break · 1 hold · 2 trap
+var array<int> dnLights = array.new<int>()
+
+// shot card (one at a time) + session W-L
+var int   cdDir  = 0        // 0 none · 1 long · -1 short
+var float cdE    = na
+var float cdS    = na
+var float cdT    = na
+var int   cdBorn = 0
+var bool  cdFill = false
+var int   cdFillBar = 0
+var array<line>  cdLns = array.new<line>()
+var array<label> cdLbs = array.new<label>()
+var int shotW = 0
+var int shotL = 0
+
+//──────────────────────────────────────────────────────────────── helpers ──
+f_pips(int s) =>
+    s >= 3 ? "●●●" : s == 2 ? "●●○" : "●○○"
+
+f_light(array<int> a, int v) =>
+    a.push(v)
+    if a.size() > 5
+        a.shift()
+
+f_kill(int i) =>
+    tP.remove(i)
+    tSide.remove(i)
+    tStr.remove(i)
+    tBorn.remove(i)
+    tCd.remove(i)
+    tFlip.remove(i)
+    tRdy.remove(i)
+    tInB.remove(i)
+    tNm.remove(i)
+
+f_addLevel(float px, int side, int str0, string nm, int bornT) =>
+    if not na(px)
+        bool merged = false
+        if tP.size() > 0
+            for i = 0 to tP.size() - 1
+                if not merged and tSide.get(i) == side and math.abs(tP.get(i) - px) <= tol * 0.5
+                    tStr.set(i, math.min(tStr.get(i) + 1, 3))
+                    if nm != "P"
+                        tNm.set(i, nm)
+                    merged := true
+        if not merged
+            tP.push(px)
+            tSide.push(side)
+            tStr.push(math.min(str0, 3))
+            tBorn.push(bornT)
+            tCd.push(0)
+            tFlip.push(0)
+            tRdy.push(true)
+            tInB.push(0)
+            tNm.push(nm)
+
+// cap one side: drop the weakest, farthest-from-price target until at cap
+f_capSide(int side) =>
+    int guard = 0
+    int cnt = 999
+    while cnt > maxL and guard < 20
+        guard += 1
+        cnt := 0
+        int worst = -1
+        int wStr = 99
+        float wDist = -1.0
+        if tP.size() > 0
+            for i = 0 to tP.size() - 1
+                if tSide.get(i) == side
+                    cnt += 1
+                    int s = tStr.get(i)
+                    float d = math.abs(tP.get(i) - close)
+                    if s < wStr or (s == wStr and d > wDist)
+                        worst := i
+                        wStr := s
+                        wDist := d
+        if cnt > maxL and worst >= 0
+            f_kill(worst)
+
+f_stamp(int x, float y, string txt, color cc, bool up) =>
+    label lb = label.new(x, y, txt, xloc = xloc.bar_time, style = up ? label.style_label_up : label.style_label_down, color = color.new(cc, 15), textcolor = #0b0e11, size = size.small)
+    stamps.push(lb)
+    if stamps.size() > maxStamp
+        label.delete(stamps.shift())
+
+f_scar(int bornT, float px) =>
+    if showScar
+        line sl = line.new(bornT, px, time, px, xloc = xloc.bar_time, color = color.new(COL_BRK, 70), style = line.style_dotted, width = 1)
+        scLn.push(sl)
+        scUntil.push(bar_index + 20)
+
+f_alert(string msg) =>
+    alert(msg, alert.freq_once_per_bar_close)
+
+f_tickDist(float px) =>
+    int(math.round(math.abs(px - close) / syminfo.mintick))
+
+// nearest opposing level in the trade's way: long → nearest ceiling above e, short → nearest floor below e
+f_nextOpp(int dir, float e) =>
+    float best = na
+    if tP.size() > 0
+        for i = 0 to tP.size() - 1
+            float lp = tP.get(i)
+            if dir == 1 and tSide.get(i) == 1 and lp > e and lp > close and (na(best) or lp < best)
+                best := lp
+            if dir == -1 and tSide.get(i) == -1 and lp < e and lp < close and (na(best) or lp > best)
+                best := lp
+    best
+
+f_cdWipe() =>
+    for l in cdLns
+        line.delete(l)
+    cdLns.clear()
+    for b in cdLbs
+        label.delete(b)
+    cdLbs.clear()
+
+// draw the card: E dashed white · S red · T green · R tag (fixed span, bar-time anchored)
+f_cdDraw(float e, float s, float t, float rr, color rCol) =>
+    int x1 = time
+    int x2 = time + inCardBars * barMs
+    cdLns.push(line.new(x1, e, x2, e, xloc = xloc.bar_time, color = COL_ARM, width = 1, style = line.style_dashed))
+    cdLns.push(line.new(x1, s, x2, s, xloc = xloc.bar_time, color = COL_BRK, width = 1))
+    cdLns.push(line.new(x1, t, x2, t, xloc = xloc.bar_time, color = COL_HIT, width = 1))
+    cdLbs.push(label.new(x2, e, "E", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(COL_CARD, 30), textcolor = COL_ARM, size = size.tiny))
+    cdLbs.push(label.new(x2, s, "S", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(COL_CARD, 30), textcolor = COL_BRK, size = size.tiny))
+    cdLbs.push(label.new(x2, t, "T", xloc = xloc.bar_time, style = label.style_label_left, color = color.new(COL_CARD, 30), textcolor = COL_HIT, size = size.tiny))
+    cdLbs.push(label.new(x1, e, "R " + str.tostring(rr, "#.#"), xloc = xloc.bar_time, style = label.style_label_right, color = color.new(COL_CARD, 30), textcolor = rCol, size = size.small, tooltip = rCol == COL_TRP ? "against the day call — reduced size or pass" : "with the tape"))
+
+//════════════════════════════════════════════════ ENGINE — confirmed bars ══
+float ph = ta.pivothigh(pivL, pivR)
+float pw = ta.pivotlow(pivL, pivR)
+
+if barstate.isconfirmed
+    // prune expired scars
+    if scLn.size() > 0
+        for j = scLn.size() - 1 to 0
+            if bar_index > scUntil.get(j)
+                line.delete(scLn.get(j))
+                scLn.remove(j)
+                scUntil.remove(j)
+
+    // shot card resolution — runs before any new scoring. PAID needs the
+    // fill to predate the target bar (same-bar fill+target = unknowable
+    // intrabar order = no credit, card stays open one more bar).
+    if cdDir != 0 and not newRTH
+        bool done = false
+        if cdDir == 1
+            if not cdFill and low <= cdE
+                cdFill := true
+                cdFillBar := bar_index
+            if cdFill and low <= cdS
+                shotL += 1
+                f_stamp(time, cdS, "STOP", COL_BRK, true)
+                done := true
+            else if high >= cdT
+                if cdFill and bar_index > cdFillBar
+                    shotW += 1
+                    f_stamp(time, cdT, "PAID", COL_TRP, false)
+                    done := true
+                else if not cdFill
+                    done := true
+        else
+            if not cdFill and high >= cdE
+                cdFill := true
+                cdFillBar := bar_index
+            if cdFill and high >= cdS
+                shotL += 1
+                f_stamp(time, cdS, "STOP", COL_BRK, false)
+                done := true
+            else if low <= cdT
+                if cdFill and bar_index > cdFillBar
+                    shotW += 1
+                    f_stamp(time, cdT, "PAID", COL_TRP, true)
+                    done := true
+                else if not cdFill
+                    done := true
+        if not done and bar_index - cdBorn >= inCardBars
+            done := true
+        if done
+            f_cdWipe()
+            cdDir := 0
+
+    // session open — scoreboard reset + seed refresh
+    if newRTH
+        hitUp := 0
+        hitDn := 0
+        trapCnt := 0
+        holdCnt := 0
+        brkCnt := 0
+        streak := 0
+        shotW := 0
+        shotL := 0
+        upLights.clear()
+        dnLights.clear()
+        f_cdWipe()
+        cdDir := 0
+        if tP.size() > 0
+            for i = tP.size() - 1 to 0
+                if tNm.get(i) != "P"
+                    f_kill(i)
+        if seedPD
+            f_addLevel(pdh, pdh >= close ? 1 : -1, 2, "PDH", time)
+            f_addLevel(pdl, pdl >= close ? 1 : -1, 2, "PDL", time)
+        if seedON and _m <= 30
+            f_addLevel(onHiF, onHiF >= close ? 1 : -1, 2, "ONH", time)
+            f_addLevel(onLoF, onLoF >= close ? 1 : -1, 2, "ONL", time)
+
+    // ── pass 1: breaks fire for every target; hit/trap candidates collected.
+    //    Only the NEAREST eligible target per side scores — overlapping bands
+    //    can't double-count one price event. ──
+    int bestUpI = -1
+    float bestUpD = 0.0
+    int bestDnI = -1
+    float bestDnD = 0.0
+    string tS = str.format_time(time, "HH:mm", TZ)
+    if tP.size() > 0
+        for i = 0 to tP.size() - 1
+            float lvl = tP.get(i)
+            int   sd  = tSide.get(i)
+            bool cool = bar_index < tCd.get(i)
+            // re-arm once price has left the zone
+            if math.abs(close - lvl) > armT
+                tRdy.set(i, true)
+            bool flipGuard = bar_index <= tFlip.get(i)
+            string pxS = str.tostring(lvl, format.mintick)
+            if sd == 1
+                // ▲ UP target (resistance)
+                bool inBand = close > lvl and close <= lvl + brkT
+                tInB.set(i, inBand ? tInB.get(i) + 1 : 0)
+                bool brk = close > lvl + brkT * (flipGuard ? 2.0 : 1.0) or tInB.get(i) >= 2
+                if brk
+                    f_scar(tBorn.get(i), lvl)
+                    f_stamp(time, lvl, "✗", COL_BRK, true)
+                    tSide.set(i, -1)
+                    tStr.set(i, math.min(tStr.get(i) + 1, 3))
+                    tBorn.set(i, time)
+                    tFlip.set(i, bar_index + 20)
+                    tCd.set(i, bar_index + 1)
+                    tRdy.set(i, true)
+                    tInB.set(i, 0)
+                    f_light(upLights, 0)
+                    brkCnt += 1
+                    streak := 0
+                    if alBrk
+                        f_alert("HITLIST|BREAK ▲|" + pxS + "|ENTER UP|" + syminfo.ticker + "|" + tS)
+                else
+                    bool touched = high >= lvl - tol and close < lvl
+                    bool arrived = close[1] < lvl + brkT
+                    if touched and arrived and not cool and tRdy.get(i)
+                        float d = math.abs(lvl - close)
+                        if bestUpI < 0 or d < bestUpD
+                            bestUpI := i
+                            bestUpD := d
+            else
+                // ▼ DOWN target (support)
+                bool inBand = close < lvl and close >= lvl - brkT
+                tInB.set(i, inBand ? tInB.get(i) + 1 : 0)
+                bool brk = close < lvl - brkT * (flipGuard ? 2.0 : 1.0) or tInB.get(i) >= 2
+                if brk
+                    f_scar(tBorn.get(i), lvl)
+                    f_stamp(time, lvl, "✗", COL_BRK, false)
+                    tSide.set(i, 1)
+                    tStr.set(i, math.min(tStr.get(i) + 1, 3))
+                    tBorn.set(i, time)
+                    tFlip.set(i, bar_index + 20)
+                    tCd.set(i, bar_index + 1)
+                    tRdy.set(i, true)
+                    tInB.set(i, 0)
+                    f_light(dnLights, 0)
+                    brkCnt += 1
+                    streak := 0
+                    if alBrk
+                        f_alert("HITLIST|BREAK ▼|" + pxS + "|ENTER DOWN|" + syminfo.ticker + "|" + tS)
+                else
+                    bool touched = low <= lvl + tol and close > lvl
+                    bool arrived = close[1] > lvl - brkT
+                    if touched and arrived and not cool and tRdy.get(i)
+                        float d = math.abs(lvl - close)
+                        if bestDnI < 0 or d < bestDnD
+                            bestDnI := i
+                            bestDnD := d
+
+    // ── pass 2: score the nearest eligible target per side ──
+    if bestUpI >= 0
+        float lvl = tP.get(bestUpI)
+        string pxS = str.tostring(lvl, format.mintick)
+        bool trap = high >= lvl + trapT or close[1] > lvl
+        if trap
+            f_stamp(time, high, "◆ +2", COL_TRP, false)
+            f_light(upLights, 2)
+            hitUp += 2
+            trapCnt += 1
+        else
+            f_stamp(time, lvl, tStr.get(bestUpI) >= 3 ? "✓ +1 ★" : "✓ +1", COL_HIT, false)
+            f_light(upLights, 1)
+            hitUp += 1
+        tStr.set(bestUpI, math.min(tStr.get(bestUpI) + 1, 3))
+        tCd.set(bestUpI, bar_index + cdB)
+        tRdy.set(bestUpI, false)
+        holdCnt += 1
+        streak += 1
+        if trap and alTrap
+            f_alert("HITLIST|TRAP ▼|" + pxS + "|ENTER DOWN|" + syminfo.ticker + "|" + tS)
+        if not trap and alHit
+            f_alert("HITLIST|HIT ▼|" + pxS + "|ENTER DOWN|" + syminfo.ticker + "|" + tS)
+        // SHORT shot card — E under the ceiling, S past it (behind sweep wick on traps), T = next floor
+        if enCard and cdDir == 0
+            float eS = lvl - 0.25 * tol
+            float sS = trap ? high + 0.25 * tol : lvl + 1.5 * tol
+            float tc = f_nextOpp(-1, eS)
+            if not na(tc)
+                float tT = tc + 0.25 * tol
+                float rr = sS - eS > 0 ? (eS - tT) / (sS - eS) : 0.0
+                if tT < eS and rr >= inMinR and eS - tT <= inTpCapA * atrV
+                    int dnm = holdCnt + brkCnt
+                    color rCol = dnm >= 3 and holdCnt * 10 <= dnm * 4 and bar_index > tFlip.get(bestUpI) ? COL_TRP : COL_HIT
+                    cdDir := -1
+                    cdE := eS
+                    cdS := sS
+                    cdT := tT
+                    cdBorn := bar_index
+                    cdFill := false
+                    f_cdDraw(eS, sS, tT, rr, rCol)
+                    if alShot
+                        f_alert("HITLIST|SHOT ▼|E " + str.tostring(eS, format.mintick) + "|S " + str.tostring(sS, format.mintick) + "|T " + str.tostring(tT, format.mintick) + "|R " + str.tostring(rr, "#.#") + "|" + syminfo.ticker + "|" + tS)
+    if bestDnI >= 0
+        float lvl = tP.get(bestDnI)
+        string pxS = str.tostring(lvl, format.mintick)
+        bool trap = low <= lvl - trapT or close[1] < lvl
+        if trap
+            f_stamp(time, low, "◆ +2", COL_TRP, true)
+            f_light(dnLights, 2)
+            hitDn += 2
+            trapCnt += 1
+        else
+            f_stamp(time, lvl, tStr.get(bestDnI) >= 3 ? "✓ +1 ★" : "✓ +1", COL_HIT, true)
+            f_light(dnLights, 1)
+            hitDn += 1
+        tStr.set(bestDnI, math.min(tStr.get(bestDnI) + 1, 3))
+        tCd.set(bestDnI, bar_index + cdB)
+        tRdy.set(bestDnI, false)
+        holdCnt += 1
+        streak += 1
+        if trap and alTrap
+            f_alert("HITLIST|TRAP ▲|" + pxS + "|ENTER UP|" + syminfo.ticker + "|" + tS)
+        if not trap and alHit
+            f_alert("HITLIST|HIT ▲|" + pxS + "|ENTER UP|" + syminfo.ticker + "|" + tS)
+        // LONG shot card — E over the floor, S past it (behind sweep wick on traps), T = next ceiling
+        if enCard and cdDir == 0
+            float eL = lvl + 0.25 * tol
+            float sL = trap ? low - 0.25 * tol : lvl - 1.5 * tol
+            float tc = f_nextOpp(1, eL)
+            if not na(tc)
+                float tT = tc - 0.25 * tol
+                float rr = eL - sL > 0 ? (tT - eL) / (eL - sL) : 0.0
+                if tT > eL and rr >= inMinR and tT - eL <= inTpCapA * atrV
+                    int dnm = holdCnt + brkCnt
+                    color rCol = dnm >= 3 and holdCnt * 10 <= dnm * 4 and bar_index > tFlip.get(bestDnI) ? COL_TRP : COL_HIT
+                    cdDir := 1
+                    cdE := eL
+                    cdS := sL
+                    cdT := tT
+                    cdBorn := bar_index
+                    cdFill := false
+                    f_cdDraw(eL, sL, tT, rr, rCol)
+                    if alShot
+                        f_alert("HITLIST|SHOT ▲|E " + str.tostring(eL, format.mintick) + "|S " + str.tostring(sL, format.mintick) + "|T " + str.tostring(tT, format.mintick) + "|R " + str.tostring(rr, "#.#") + "|" + syminfo.ticker + "|" + tS)
+
+    // ── new pivots join the board (confirmed pivR bars after the extreme) ──
+    if not na(ph)
+        f_addLevel(ph, ph >= close ? 1 : -1, 1, "P", time[pivR])
+    if not na(pw)
+        f_addLevel(pw, pw >= close ? 1 : -1, 1, "P", time[pivR])
+    f_capSide(1)
+    f_capSide(-1)
+
+//════════════════════════════════════════════════════ RENDER — last bar ══
+if barstate.islast
+    for l in rLn
+        line.delete(l)
+    rLn.clear()
+    for b in rLb
+        label.delete(b)
+    rLb.clear()
+
+    // targets: line + badge
+    if tP.size() > 0
+        for i = 0 to tP.size() - 1
+            float lvl = tP.get(i)
+            int   sd  = tSide.get(i)
+            int   st  = tStr.get(i)
+            bool armed = math.abs(close - lvl) <= armT
+            color lc = armed ? COL_ARM : color.new(COL_NEU, 55)
+            int   lw = armed ? math.min(st + 1, 4) : st
+            rLn.push(line.new(tBorn.get(i), lvl, time, lvl, xloc = xloc.bar_time, extend = extend.right, color = lc, width = lw))
+            string glyph = armed ? "◉ " : "◎ "
+            // arrow = the trade at this level: ceiling (sd 1) wears ▼, floor wears ▲
+            string arrow = sd == 1 ? "▼ " : "▲ "
+            string flipT = bar_index <= tFlip.get(i) ? " FLIP" : ""
+            string btxt = glyph + arrow + f_pips(st) + flipT
+            string tip = tNm.get(i) + " " + str.tostring(lvl, format.mintick) + " | str " + str.tostring(st) + " | " + str.tostring(f_tickDist(lvl)) + "t away"
+            rLb.push(label.new(time + badgeOff * barMs, lvl, btxt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(COL_CARD, 20), textcolor = armed ? COL_ARM : COL_NEU, size = size.small, tooltip = tip))
+
+    // NEXT race — nearest ▲ above vs nearest ▼ below, leader lit
+    if showNext and tP.size() > 0
+        float nUp = na
+        float nDn = na
+        for i = 0 to tP.size() - 1
+            float lvl = tP.get(i)
+            if tSide.get(i) == 1 and lvl > close and (na(nUp) or lvl < nUp)
+                nUp := lvl
+            if tSide.get(i) == -1 and lvl < close and (na(nDn) or lvl > nDn)
+                nDn := lvl
+        bool upLeads = not na(nUp) and (na(nDn) or nUp - close <= close - nDn)
+        int nx = time + (badgeOff + 8) * barMs
+        if not na(nUp)
+            string uT = (upLeads ? "► " : "") + "▼ " + str.tostring(f_tickDist(nUp)) + "t"
+            rLb.push(label.new(nx, nUp, uT, xloc = xloc.bar_time, style = label.style_label_left, color = upLeads ? color.new(COL_NEU, 0) : color.new(COL_CARD, 40), textcolor = upLeads ? #0b0e11 : COL_DIM, size = size.normal))
+        if not na(nDn)
+            string dT = (not upLeads ? "► " : "") + "▲ " + str.tostring(f_tickDist(nDn)) + "t"
+            rLb.push(label.new(nx, nDn, dT, xloc = xloc.bar_time, style = label.style_label_left, color = not upLeads ? color.new(COL_NEU, 0) : color.new(COL_CARD, 40), textcolor = not upLeads ? #0b0e11 : COL_DIM, size = size.normal))
+
+//──────────────────────────────────────────────────────── verdict strip ──
+f_dashPos() =>
+    dashPos == "Top left" ? position.top_left : dashPos == "Bottom right" ? position.bottom_right : dashPos == "Bottom left" ? position.bottom_left : position.top_right
+
+// side form from the last-5 outcome ring (0 break · 1 hold · 2 trap)
+f_form(array<int> a) =>
+    int n = a.size()
+    int holds = 0
+    for v in a
+        if v >= 1
+            holds += 1
+    string s = "—"
+    color cc = COL_DIM
+    if n >= 2
+        if holds * 10 >= n * 6
+            s := "PAYING"
+            cc := COL_HIT
+        else if holds * 10 <= n * 4
+            s := "FAILING"
+            cc := COL_BRK
+        else
+            s := "MIXED"
+            cc := COL_NEU
+    [s, cc]
+
+var table hud = table(na)
+if barstate.islast
+    if not na(hud)
+        table.delete(hud)
+    hud := table.new(f_dashPos(), 4, 2, bgcolor = color.new(COL_CARD, 15), frame_width = 1, frame_color = color.new(COL_CARD, 0))
+    // R0 — the day call, one line, plain words
+    int denom = holdCnt + brkCnt
+    string vTxt = "● WARMING UP"
+    color vCol = COL_DIM
+    if denom >= 3
+        string pctS = str.tostring(math.round(100.0 * holdCnt / denom)) + "%"
+        if holdCnt * 10 >= denom * 6
+            vTxt := "● BOUNCE DAY " + pctS
+            vCol := COL_HIT
+        else if holdCnt * 10 <= denom * 4
+            vTxt := "● TREND DAY " + pctS
+            vCol := COL_BRK
+        else
+            vTxt := "● CHOP " + pctS + " · HALF SIZE"
+            vCol := COL_NEU
+    if shotW + shotL > 0
+        vTxt := vTxt + " · " + str.tostring(shotW) + "-" + str.tostring(shotL)
+    table.cell(hud, 0, 0, vTxt, text_color = vCol, text_size = size.small, text_halign = text.align_left)
+    table.cell(hud, 1, 0, "", text_size = size.small)
+    table.cell(hud, 2, 0, "", text_size = size.small)
+    table.cell(hud, 3, 0, "", text_size = size.small)
+    table.merge_cells(hud, 0, 0, 3, 0)
+    // R1 — trade form (▼ shorts at ceilings · ▲ longs at floors) · streak · traps
+    [upS, upC] = f_form(upLights)
+    [dnS, dnC] = f_form(dnLights)
+    table.cell(hud, 0, 1, "▼ " + upS, text_color = upC, text_size = size.tiny)
+    table.cell(hud, 1, 1, "▲ " + dnS, text_color = dnC, text_size = size.tiny)
+    table.cell(hud, 2, 1, "RUN " + str.tostring(streak), text_color = streak >= 2 ? COL_HIT : COL_DIM, text_size = size.tiny)
+    table.cell(hud, 3, 1, "◆ " + str.tostring(trapCnt), text_color = trapCnt > 0 ? COL_TRP : COL_DIM, text_size = size.tiny)
