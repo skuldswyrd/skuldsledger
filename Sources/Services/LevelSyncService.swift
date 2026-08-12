@@ -4,10 +4,11 @@ import Vision
 
 /// A ranked cluster read off the live TradingView chart. SKULD label formats
 /// by era, all parsed:
-///  · 2.6+ execution — "NAME ◆ 29622.75 · 547t · 11.5★ · 1H/0B"
+///  · SKULD 2.6+     — "NAME ◆ 29622.75 · 547t · 11.5★ · 1H/0B"
 ///    (EffScore ★ + directional record; ◆ = imbalance-zone tag)
-///  · v2 score       — "[12] pdH+NY H  29192.50 · 3.50"
-///  · v1 stars       — "★★★★★ pdH+NY H  29192.50 · 3.50"
+///  · SKULD v2 score — "[12] pdH+NY H  29192.50 · 3.50"
+///  · SKULD v1 stars — "★★★★★ pdH+NY H  29192.50 · 3.50"
+///  · HITLIST badge  — "◉ ▼ ●●●" (level = label price; name synthesized)
 struct ChartLevel: Equatable {
     let name: String
     let price: Double
@@ -85,10 +86,11 @@ final class LevelSyncService {
         guard let cli = Self.locateCLI() else { return .failure(.cliNotFound) }
 
         let output: String
-        // Filter "kuld" matches every title era — "Skuld Unified v2.x" AND the
-        // all-caps "SKULD 2.6+" (a case-sensitive "Skuld" filter went blind
-        // the day the title changed).
-        switch await runProcess(cli: cli, args: ["data", "labels", "-f", "kuld", "-n", "60"], timeout: 20) {
+        // NO study filter: the tv CLI's filter is a case-sensitive indexOf
+        // against the study description, which broke the day the title went
+        // all-caps — and the user runs SKULD, HITLIST, or both. Read every
+        // study; parseClusterLabel's shape guards drop foreign labels.
+        switch await runProcess(cli: cli, args: ["data", "labels", "-n", "120"], timeout: 20) {
         case .success(let out): output = out
         case .failure(let err): return .failure(err)
         }
@@ -120,7 +122,22 @@ final class LevelSyncService {
     /// the label TEXT (exact level); the label's y-price drifts and is only
     /// a fallback.
     static func parseClusterLabel(_ text: String, fallbackPrice: Double?) -> ChartLevel? {
-        // 2.6+ execution format first — it's what the live chart draws now:
+        // HITLIST target badge: "◉ ▼ ●●●" / "◎ ▲ ●○○ FLIP" — no name or
+        // price in the text; the label's y IS the level. Stable synthetic
+        // name (side + price) so merge-by-name holds across pulls. Strength
+        // dots map to the star ladder (●○○ 2★ · ●●○ 3★ · ●●● 4★).
+        if text.hasPrefix("◉") || text.hasPrefix("◎") {
+            guard let price = fallbackPrice else { return nil }
+            let dots = text.filter { $0 == "●" }.count
+            guard dots > 0, text.contains("▲") || text.contains("▼") else { return nil }
+            let arrow = text.contains("▼") ? "▼" : "▲"
+            return ChartLevel(
+                name: "HL \(arrow) \(price)",
+                price: price,
+                stars: max(1, min(5, dots + 1)),
+                rank: nil)
+        }
+        // SKULD 2.6+ execution format — what the live chart draws now:
         // "NAME ◆ 29622.75 · 547t · 11.5★ · 1H/0B" (price omitted when the
         // showPx input is off; ◆ optional).
         if !text.hasPrefix("["), !text.hasPrefix("★") {

@@ -21,8 +21,8 @@ targets:
       base:
         PRODUCT_NAME: Skulds Ledger
         PRODUCT_BUNDLE_IDENTIFIER: com.skuld.SkuldsLedger
-        MARKETING_VERSION: "1.5.1"
-        CURRENT_PROJECT_VERSION: "7"
+        MARKETING_VERSION: "1.5.2"
+        CURRENT_PROJECT_VERSION: "8"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
