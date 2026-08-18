@@ -1,3 +1,27 @@
+# SKULD 3.1.0 — SESSION PERSPECTIVE (2026-08-12)
+
+Purely informational addition, his ask: "a way to understand RTH and ETH,
+maintain perspective on a movement" — zero effect on gates, doctrine, or
+the ticket.
+
+- Thin dotted vertical line at every session open. NY (RTH) gets a small
+  tagged label + a slightly brighter line; Asia/London (ETH) draw dimmer,
+  unlabeled. Static once drawn — never repainted/redrawn. Toggle
+  showSessLines (default on); off = zero chart marks. No background
+  shading anywhere (standing no-decorative-chart-art rule).
+- New HUD row, WAITING state only: "NY 47m · rng 63% ADR" — elapsed time
+  in the live session + today's range so far vs the prior day's ATR(14)
+  (the regime engine's own dATR — no new state added). Amber only past
+  100% of a normal day's range — a heads-up, never a gate.
+
+Considered and rejected for 3.1: LuxAlgo's Polynomial Regression
+Extrapolation. Three reasons: CC BY-NC-SA license blocks embedding it in
+this public repo; a curve-fit forward projection is exactly the "random
+math target" doctrine 2.9.3 killed ("use key levels as targets"); and
+polynomial extrapolation is inherently unstable at the fitted window's
+edges (Runge's phenomenon) — not something serious desks forecast with.
+Regime detection stays ADX's job.
+
 # SKULD 3.0.0 — VWAP MEAN REVERSION, ONE EDGE (2026-08-12)
 
 Rewritten from scratch around a single setup. The doctrine, one line:

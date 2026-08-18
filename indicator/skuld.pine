@@ -1,6 +1,17 @@
 //@version=6
 // ═══════════════════════════════════════════════════════════════════════════
-//  SKULD 3.0 — VWAP MEAN REVERSION. ONE EDGE.
+//  SKULD 3.1 — VWAP MEAN REVERSION. ONE EDGE.
+//  v3.1.0 (2026-08-12): SESSION PERSPECTIVE — RTH/ETH markers + a day-so-far
+//     read, purely informational, zero effect on gates or the ticket.
+//   · Thin dotted vertical line at every session open: NY (RTH) tagged with
+//     a small "RTH" label + slightly brighter line; Asia/London (ETH) drawn
+//     dimmer, unlabeled. Static once drawn — never repainted. Toggle
+//     showSessLines (default on); off = zero chart marks.
+//   · New HUD row (WAITING state only): "NY 47m · rng 63% ADR" — elapsed
+//     time in the live session + today's range so far vs the prior day's
+//     ATR(14) (the regime engine's own dATR — no new state). Turns amber
+//     only past 100% (today already exceeds a normal day) — a heads-up,
+//     not a gate.
 //  v3.0.0 (2026-08-12)
 //
 //  DOCTRINE: price stretched from session VWAP (σ or range), landing ON a
@@ -49,7 +60,7 @@
 //  Chart of record for signals: 15m. Candle-close confirmed only. No
 //  lookahead. No repaint. One alert covers all: "Any alert() function call".
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SKULD 3.0 — VWAP Mean Reversion", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("SKULD 3.1 — VWAP Mean Reversion", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
 // ── ASSET AUTO-TUNE ────────────────────────────────────────────────────────
 bool isES = syminfo.root == "ES" or syminfo.root == "MES"
@@ -81,6 +92,7 @@ int    inIbMin = input.int(60, "Initial balance: minutes from EACH session open"
 string onSess  = input.session("1800-0930", "Overnight (ONH/ONL)", group = GS)
 string sAsia   = input.session("1800-0300", "Asia session (ET)", group = GS)
 string sLdn    = input.session("0300-0930", "London session (ET)", group = GS)
+bool showSessLines = input.bool(true, "Session-open lines (RTH tick + ETH dividers)", group = GS, tooltip = "Thin dotted vertical line at each session open — NY (RTH) tagged with a small label, Asia/London (ETH) dimmer and unlabeled. Perspective only, no trade logic. Off = no chart marks; the HUD's session row keeps working either way.")
 
 int    inRows  = input.int(24, "Extraction rows per profile", minval = 6, maxval = 60, group = GP)
 float  inVA    = input.float(70, "Value area %", minval = 50, maxval = 95, group = GP)
@@ -206,6 +218,8 @@ color colS1     = input.color(#4c5158, "★ level", group = GC)
 color colDevPoc = input.color(#ff9800, "Developing POC lines", group = GC)
 color colVwap   = input.color(#00bcd4, "VWAP", group = GC)
 color colBand   = input.color(#9598a1, "σ bands", group = GC)
+color colRth    = input.color(#00bcd4, "RTH open line (NY)", group = GC)
+color colEth    = input.color(#4c5158, "ETH open line (Asia/London)", group = GC)
 color colUp     = input.color(#00FF00, "Long signals / T1", group = GC)
 color colDn     = input.color(#673ab7, "Short signals", group = GC)
 color colStop   = input.color(#ef5350, "Stop line / loss", group = GC)
@@ -671,6 +685,10 @@ var float barVolUD = 0.0
 var string sessPrev = ""
 var float sessHi = na
 var float sessLo = na
+// session-open perspective lines (3.1) — static historical markers, drawn
+// once per session on the confirmed bar, never redrawn/repainted
+var array<line> sessLn = array.new<line>()
+var array<label> sessLb = array.new<label>()
 // live MR signal (HUD SIGNAL state + validity window)
 var int sigDir = 0
 var float sigE = na
@@ -963,6 +981,20 @@ if barstate.isconfirmed
     // ── EPOCH bumps + pending purge — O(1) scope resets ──────────────────
     if newSess
         epSess += 1
+        // session-open perspective line (3.1) — RTH (NY) gets a tagged,
+        // slightly brighter line; ETH (Asia/London) a dim untagged divider.
+        // Vertical: same x both ends, extend.both handles arbitrary price
+        // range. Static once drawn — never touched again (no repaint).
+        if showSessLines
+            bool isRth = sessNow == "NY"
+            color lc = isRth ? color.new(colRth, 55) : color.new(colEth, 78)
+            sessLn.push(line.new(time, low, time, high, xloc = xloc.bar_time, extend = extend.both, color = lc, style = line.style_dotted, width = 1))
+            if sessLn.size() > 60
+                line.delete(sessLn.shift())
+            if isRth
+                sessLb.push(label.new(time, high, "RTH", xloc = xloc.bar_time, style = label.style_label_down, color = color.new(#0d0d10, 60), textcolor = color.new(colRth, 20), size = size.tiny))
+                if sessLb.size() > 30
+                    label.delete(sessLb.shift())
     if timeframe.change("W")
         epWeek += 1
     // trade day starts at the Asia open — but data with no 18:00 ET bars
@@ -1727,6 +1759,18 @@ if showDash and not showDebugHud and barstate.islast
         table.cell(hud, 1, 4, g2, text_color = g2c, text_size = size.tiny, text_halign = text.align_right, bgcolor = hCard, tooltip = "Stretch: ≥ " + str.tostring(stretchSigmaMin, "#.#") + "σ from VWAP or ≥ " + str.tostring(stretchRangeMult, "#.##") + "×ATR14")
         table.cell(hud, 2, 4, g3, text_color = g3c, text_size = size.tiny, text_halign = text.align_right, bgcolor = hCard, tooltip = "RSI(" + str.tostring(rsiLen) + ") trigger for the stretch side, 2-bar window")
         table.cell(hud, 3, 4, g4, text_color = g4c, text_size = size.tiny, text_halign = text.align_right, bgcolor = hCard, tooltip = "Price at a pool level whose EffScore ≥ the regime trade floor")
+        // SESSION PERSPECTIVE (3.1) — where in the day, how big the move so
+        // far. dATR (prior-day ATR14, already the regime driver) stands in
+        // as the average-day-range yardstick — no new state needed.
+        string sessTxt = "OFF-SESSION"
+        color sessTxtC = hDim
+        if inAnySess
+            int elapsedMin = na(sessStartT) ? 0 : int((time - sessStartT) / 60000)
+            float rngPct = (not na(dAtr) and dAtr > 0 and not na(sessHi) and not na(sessLo)) ? (sessHi - sessLo) / dAtr * 100 : na
+            sessTxt := sessNow + " " + str.tostring(elapsedMin) + "m" + (na(rngPct) ? "" : " · rng " + str.tostring(math.round(rngPct)) + "% ADR")
+            sessTxtC := na(rngPct) ? hDim : rngPct >= 100 ? hAmb : hDim
+        table.cell(hud, 0, 5, sessTxt, text_color = sessTxtC, text_size = size.tiny, text_halign = text.align_left, bgcolor = hCard, tooltip = "Time elapsed in the active session + today's range so far vs the prior day's ATR(14) — perspective on how big today's move is, not a gate.")
+        table.merge_cells(hud, 0, 5, 3, 5)
     else
         // ── STRUCTURE ──
         table.cell(hud, 0, 1, "map only — no signals", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)

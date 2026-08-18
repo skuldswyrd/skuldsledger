@@ -1,4 +1,4 @@
-# SKULD 3.0 — VWAP Mean Reversion (one edge)
+# SKULD 3.1 — VWAP Mean Reversion (one edge)
 
 One TradingView indicator, one setup. It IS the level engine the journal speaks — ranked clusters, developing levels, a live effective score — but since 3.0 it fires exactly one play: **session-VWAP mean reversion at structure**.
 
