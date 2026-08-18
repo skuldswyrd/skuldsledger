@@ -85,6 +85,56 @@ final class MentorService {
         return await run(prompt: prompt, resumeSessionId: resumeSessionId)
     }
 
+    // MARK: - Lane react (Lanes screen — persistent per-symbol thread)
+
+    /// Reacts to a lane's live SKULD dashboard mirror — same CLI plumbing as
+    /// `review`/`threadReply`, its own prompt. Called on a WAITING->SIGNAL
+    /// transition read off the HUD text, and from a lane's own comment
+    /// composer (SessionStore.sendLaneComment).
+    func laneReact(symbol: String, hudLines: [String], thread: [LaneUpdateRecord],
+                   resumeSessionId: String?) async -> Result<MentorResult, MentorError> {
+        let prompt = Self.buildLanePrompt(symbol: symbol, hudLines: hudLines, thread: thread)
+        return await run(prompt: prompt, resumeSessionId: resumeSessionId)
+    }
+
+    /// Lanes aren't scoped to a session/plan (they're symbol-keyed, can run
+    /// with no session open at all), so there's no live pace stat to hand
+    /// philosophyBlock — TradingPlan's own struct default (3/day) stands in;
+    /// the number only feeds the "trade count is context, not a grade"
+    /// boilerplate line, so an exact live figure isn't load-bearing here.
+    private static func buildLanePrompt(symbol: String, hudLines: [String],
+                                        thread: [LaneUpdateRecord]) -> String {
+        var lines: [String] = []
+        lines.append("You are skuld's live trading mentor, watching a persistent lane for \(symbol) — one of six panes in his live TradingView layout that each get their own ongoing thread.")
+        lines.append("")
+        lines.append("Here's the live SKULD dashboard on \(symbol) right now:")
+        lines.append(contentsOf: hudLines)
+
+        // Prior mentor/user turns only — system HUD snapshots aren't
+        // restated here since the CURRENT read is already given verbatim
+        // above; replaying stale snapshots would just be noise.
+        var exchange: [String] = []
+        for update in thread {
+            switch update.kind {
+            case "mentor": exchange.append("You said: \(update.text)")
+            case "user": exchange.append("Trader replied: \(update.text)")
+            default: break
+            }
+        }
+        if !exchange.isEmpty {
+            lines.append("")
+            lines.append("Lane so far:")
+            lines.append(contentsOf: exchange)
+        }
+
+        lines.append("")
+        lines.append(philosophyBlock(paceBaseline: TradingPlan().maxTradesPerDay))
+        lines.append("")
+        lines.append("Give a short reaction (~60-80 words): is this shaping into a real setup on \(symbol) right now, or is it noise — one plain-language read, graded against the checklist above (regime, stretch, trigger, level, rejection, risk, discipline). Read the dashboard text like a human would; don't try to re-derive it into something else. Never use the word \"fade\" — say \"reversal\" or frame by direction.")
+
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: - Pre-trade edge check (GO / WAIT / NO)
 
     /// Quick verdict against the one-edge checklist BEFORE the trade. Fresh

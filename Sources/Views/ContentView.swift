@@ -13,7 +13,7 @@ struct ContentView: View {
     @State private var showSettleDay = false
     @State private var showAnalytics = false
     @State private var showBlog = false
-    @State private var showScanner = false
+    @State private var showLanes = false
     @State private var showNewSession = false
     @State private var newSessionName = ""
     @State private var newSessionInstrument: Instrument = .NQ
@@ -54,8 +54,8 @@ struct ContentView: View {
             .sheet(isPresented: $showBlog) {
                 BlogView()
             }
-            .sheet(isPresented: $showScanner) {
-                ScannerView()
+            .sheet(isPresented: $showLanes) {
+                LanesView()
             }
             .toolbar {
                 // Always visible — pre-session setup included: session
@@ -135,11 +135,11 @@ struct ContentView: View {
                 }
                 ToolbarItem(placement: .automatic) {
                     Button {
-                        showScanner = true
+                        showLanes = true
                     } label: {
-                        Label("Scanner", systemImage: "rectangle.grid.2x2")
+                        Label("Lanes", systemImage: "rectangle.split.3x1")
                     }
-                    .help("Scan every pane in the live TradingView multi-chart layout at once")
+                    .help("Six persistent lanes, one per pane — live HUD read + its own ongoing mentor thread")
                 }
                 ToolbarItem(placement: .automatic) {
                     Button {

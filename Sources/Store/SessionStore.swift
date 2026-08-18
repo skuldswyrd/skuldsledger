@@ -109,6 +109,13 @@ final class SessionStore: ObservableObject {
     /// `levels` (tagged per pane); this array is the raw per-pane snapshot.
     @Published private(set) var scanResults: [ScanResult] = []
     @Published private(set) var scanBusy: Bool = false
+    /// Lanes screen: symbol -> its persistent mentor thread, oldest first.
+    /// Populated lazily — a symbol's history loads from the DB the first
+    /// time `scanAllPanes()` touches it each launch (see `recordLaneUpdates`),
+    /// not eagerly at bootstrap.
+    @Published private(set) var laneUpdates: [String: [LaneUpdateRecord]] = [:]
+    /// Symbols with a lane mentor call in flight ("thinking…" on that card).
+    @Published private(set) var laneMentorBusy: Set<String> = []
     /// Set by the Scanner sheet's "Log entry →" — the composer preselects
     /// its instrument from this on appear, then clears it back to nil.
     @Published var pendingComposerInstrument: Instrument?
@@ -121,6 +128,14 @@ final class SessionStore: ObservableObject {
     private let levelSync = LevelSyncService()
     private var levelSyncTimer: Timer?
     private var dayCheckTimer: Timer?
+    /// This-launch-only dedup for the lane auto-log: a scan's hudLines per
+    /// symbol, so identical back-to-back reads don't spam the thread with
+    /// duplicate system entries. Never persisted — a relaunch starts fresh.
+    private var lastHudSnapshot: [String: [String]] = [:]
+    /// Most recent 15-minute ET boundary the Lanes auto-refresh already
+    /// fired for — guards the 60s day-check timer from double-firing inside
+    /// one 15-90s settle window.
+    private var lastLaneBoundary: Date?
 
     @Published private(set) var todayDate: String = Workspace.todayString()
 
@@ -147,7 +162,11 @@ final class SessionStore: ObservableObject {
         // touched — that is the hard rule.
         if settings.launchTVWithLedger ?? true {
             if TVLauncher.launchWithBridgeIfClosed() {
-                scheduleTVStatusRetries()
+                // launchWithBridgeIfClosed() just returned true, meaning
+                // Ledger itself performed a COLD start (TV was not already
+                // running) — only THIS path may switch layouts once the
+                // bridge comes up. A running TV is never touched.
+                scheduleTVStatusRetries(switchToLaneLayoutOnBridge: true)
             }
         }
 
@@ -183,12 +202,30 @@ final class SessionStore: ObservableObject {
             Task { @MainActor in
                 self?.refreshDayIfNeeded()
                 await self?.refreshTVStatus()
+                self?.checkLaneAutoRefresh()
             }
         }
         levelSyncTimer?.invalidate()
         levelSyncTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.syncLevelsFromChart(manual: false) }
         }
+    }
+
+    /// Lanes auto-refresh: rides the existing 60s heartbeat rather than a
+    /// separate Timer. Fires the same full `scanAllPanes()` sweep the "Scan
+    /// All" button does once per real 15-minute ET bar close, gated by a
+    /// 15-90s settle window so it fires after the bar has actually closed
+    /// and TradingView has redrawn — never mid-bar. Only while a session is
+    /// open (matches the Lanes UI's "auto every 15 min when a session is
+    /// open" copy and the existing 5-minute single-pane sync's own gate).
+    private func checkLaneAutoRefresh(now: Date = Date()) {
+        guard session != nil else { return }
+        let boundary = Workspace.mostRecentQuarterHourET(now: now)
+        let sinceBoundary = now.timeIntervalSince(boundary)
+        guard sinceBoundary >= 15, sinceBoundary <= 90 else { return }
+        guard lastLaneBoundary == nil || boundary > lastLaneBoundary! else { return }
+        lastLaneBoundary = boundary
+        Task { await self.scanAllPanes() }
     }
 
     /// App left open overnight must not journal under yesterday's date —
@@ -294,13 +331,37 @@ final class SessionStore: ObservableObject {
 
     /// TradingView boots in seconds, its CDP socket a beat later — poll a few
     /// times after WE launched it so the dot goes green without user action.
-    private func scheduleTVStatusRetries() {
+    /// `switchToLaneLayoutOnBridge`: true ONLY from bootstrap()'s cold-start
+    /// path — once the bridge answers, fire the one-time lane layout switch.
+    /// The toolbar's manual "open TV" path never passes true, so a
+    /// user-triggered open never switches layouts either — only Ledger's own
+    /// launch-time cold start does.
+    private func scheduleTVStatusRetries(switchToLaneLayoutOnBridge: Bool = false) {
         Task { [weak self] in
             for delay in [3.0, 8.0, 15.0, 30.0] {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 guard let self else { return }
                 await self.refreshTVStatus()
-                if self.tvStatus == .bridge { return }
+                if self.tvStatus == .bridge {
+                    if switchToLaneLayoutOnBridge { self.switchToLaneLayoutIfConfigured() }
+                    return
+                }
+            }
+        }
+    }
+
+    /// Fire-and-forget `tv layout switch` to the configured lane layout.
+    /// Called ONLY right after Ledger's own bootstrap() cold-started
+    /// TradingView (see scheduleTVStatusRetries above) — never on a
+    /// manually-opened or already-running TradingView. Failure surfaces via
+    /// the existing errorMessage toast and never blocks anything.
+    private func switchToLaneLayoutIfConfigured() {
+        guard let name = settings.laneLayoutName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            if case .failure(let err) = await self.levelSync.switchLayout(named: name) {
+                await MainActor.run { self.errorMessage = err.localizedDescription }
             }
         }
     }
@@ -1068,11 +1129,13 @@ final class SessionStore: ObservableObject {
         reloadAll()
     }
 
-    /// Manual, user-triggered sweep of every pane in the live TradingView
-    /// multi-chart layout (Scanner sheet's "Scan All"). 20-40s for six panes
-    /// is expected — this never rides the 5-minute single-pane auto-timer.
-    /// Each pane's levels merge in tagged with that pane's raw symbol, so
-    /// the same level name on two different instruments stays two rows.
+    /// Sweeps every pane in the live TradingView multi-chart layout — the
+    /// Lanes sheet's "Scan All" button, OR the automatic 15-minute ET tick
+    /// (see checkLaneAutoRefresh). 20-40s for six panes is expected — this
+    /// never rides the 5-minute single-pane auto-timer. Each pane's levels
+    /// merge in tagged with that pane's raw symbol, so the same level name
+    /// on two different instruments stays two rows; each pane's HUD read
+    /// then feeds its own Lanes thread via recordLaneUpdates below.
     func scanAllPanes() async {
         guard !scanBusy else { return }
         scanBusy = true
@@ -1092,8 +1155,147 @@ final class SessionStore: ObservableObject {
             if saveFailures > 0 {
                 errorMessage = "Pane scan: \(saveFailures) of \(results.count) panes' levels failed to save."
             }
+            recordLaneUpdates(for: results)
         case .failure(let err):
             errorMessage = err.localizedDescription
+        }
+    }
+
+    // MARK: - Lanes (persistent per-symbol thread on top of the pane scan)
+
+    /// Runs after every scan's level merge: logs a "system" thread entry
+    /// per pane whose HUD text changed since this launch's last read
+    /// (dedup via `lastHudSnapshot`, never persisted), lazily backfills a
+    /// symbol's thread from the DB the first time it's seen this launch, and
+    /// fires that lane's mentor on a WAITING->SIGNAL edge (plain substring
+    /// check against the opaque HUD mirror — never parsed further). Each
+    /// firing lane runs as its own detached Task so N lanes tripping SIGNAL
+    /// on the same sweep react concurrently instead of serializing.
+    private func recordLaneUpdates(for results: [ScanResult]) {
+        guard let db else { return }
+        for result in results {
+            // First touch this launch — backfill from the DB so a relaunch
+            // doesn't present as an empty thread once the lane is scanned.
+            if laneUpdates[result.symbol] == nil {
+                laneUpdates[result.symbol] = (try? db.laneUpdates(symbol: result.symbol)) ?? []
+            }
+
+            let previous = lastHudSnapshot[result.symbol]
+            if previous != result.hudLines {
+                let record = LaneUpdateRecord(
+                    id: UUID().uuidString,
+                    symbol: result.symbol,
+                    ts: Workspace.isoNow(),
+                    kind: "system",
+                    text: result.hudLines.joined(separator: "\n"))
+                do {
+                    try db.save(record)
+                    reloadLaneThread(symbol: result.symbol)
+                } catch {
+                    NSLog("recordLaneUpdates: save failed for \(result.symbol): \(error)")
+                }
+            }
+
+            let previousHadSignal = previous?.joined(separator: "\n").contains("SIGNAL") ?? false
+            let nowHasSignal = result.hudLines.joined(separator: "\n").contains("SIGNAL")
+            let hadPriorRead = previous != nil
+            lastHudSnapshot[result.symbol] = result.hudLines
+
+            if hadPriorRead, !previousHadSignal, nowHasSignal {
+                let symbol = result.symbol
+                let hudLines = result.hudLines
+                Task { [weak self] in
+                    await self?.laneMentorReact(symbol: symbol, hudLines: hudLines)
+                }
+            }
+        }
+    }
+
+    private func reloadLaneThread(symbol: String) {
+        guard let db else { return }
+        laneUpdates[symbol] = (try? db.laneUpdates(symbol: symbol)) ?? (laneUpdates[symbol] ?? [])
+    }
+
+    /// Fires on a lane's WAITING->SIGNAL transition. Re-entry guarded per
+    /// symbol; resumes that lane's own claude session (lane_threads,
+    /// independent of the session-scoped mentor's --resume chain) so its
+    /// conversation has continuity across days like a dedicated thread.
+    func laneMentorReact(symbol: String, hudLines: [String]) async {
+        guard let db, let mentor, mentorAvailable, !laneMentorBusy.contains(symbol) else { return }
+        laneMentorBusy.insert(symbol)
+        let resumeId = ((try? db.laneThread(symbol: symbol)) ?? nil)?.mentorClaudeSessionId
+        let thread = laneUpdates[symbol] ?? []
+
+        let outcome = await mentor.laneReact(
+            symbol: symbol, hudLines: hudLines, thread: thread, resumeSessionId: resumeId)
+        laneMentorBusy.remove(symbol)
+        switch outcome {
+        case .success(let result):
+            let reply = LaneUpdateRecord(
+                id: UUID().uuidString, symbol: symbol,
+                ts: Workspace.isoNow(), kind: "mentor", text: result.reply)
+            do {
+                try db.save(reply)
+                try db.save(LaneThreadRecord(
+                    symbol: symbol,
+                    mentorClaudeSessionId: result.claudeSessionId,
+                    updatedAt: Workspace.isoNow()))
+                reloadLaneThread(symbol: symbol)
+            } catch {
+                NSLog("laneMentorReact: save failed for \(symbol): \(error)")
+            }
+        case .failure(let err):
+            NSLog("laneMentorReact failed for \(symbol): \(err)")
+        }
+    }
+
+    /// Mirrors addUserComment(entryId:text:) but keyed by a raw pane symbol
+    /// instead of an entry id: persists the trader's line to that lane's own
+    /// thread immediately, then asks the lane's mentor (its own --resume
+    /// session) for a reply using the lane's thread as context.
+    func sendLaneComment(symbol: String, text: String) {
+        guard let db else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let userUpdate = LaneUpdateRecord(
+            id: UUID().uuidString, symbol: symbol,
+            ts: Workspace.isoNow(), kind: "user", text: trimmed)
+        do {
+            try db.save(userUpdate)
+            reloadLaneThread(symbol: symbol)
+        } catch {
+            errorMessage = "Failed to save lane comment: \(error.localizedDescription)"
+            return
+        }
+
+        guard let mentor, mentorAvailable, !laneMentorBusy.contains(symbol) else { return }
+        laneMentorBusy.insert(symbol)
+        let hudLines = scanResults.first(where: { $0.symbol == symbol })?.hudLines
+            ?? lastHudSnapshot[symbol] ?? []
+        let thread = laneUpdates[symbol] ?? []
+        let resumeId = ((try? db.laneThread(symbol: symbol)) ?? nil)?.mentorClaudeSessionId
+
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await mentor.laneReact(
+                symbol: symbol, hudLines: hudLines, thread: thread, resumeSessionId: resumeId)
+            await MainActor.run {
+                self.laneMentorBusy.remove(symbol)
+                guard case .success(let result) = outcome else { return }
+                let reply = LaneUpdateRecord(
+                    id: UUID().uuidString, symbol: symbol,
+                    ts: Workspace.isoNow(), kind: "mentor", text: result.reply)
+                do {
+                    try self.db?.save(reply)
+                    try self.db?.save(LaneThreadRecord(
+                        symbol: symbol,
+                        mentorClaudeSessionId: result.claudeSessionId,
+                        updatedAt: Workspace.isoNow()))
+                } catch {
+                    NSLog("sendLaneComment: mentor save failed for \(symbol): \(error)")
+                }
+                self.reloadLaneThread(symbol: symbol)
+            }
         }
     }
 

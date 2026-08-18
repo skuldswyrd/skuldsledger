@@ -218,6 +218,36 @@ struct CommentRecord: Codable, Identifiable, Equatable, FetchableRecord, Persist
     var text: String
 }
 
+/// Lanes: one row per raw pane symbol ("MNQ1!", "XAUUSD", ...), tracking
+/// that lane's own --resume claude session id so its mentor conversation
+/// persists across days like a dedicated thread. Keyed on the raw symbol,
+/// not the app's Instrument enum, so forex/CFD panes with no Instrument
+/// case (XAUUSD, NAS100 CFD, USDCAD) still get a lane.
+struct LaneThreadRecord: Codable, Equatable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "lane_threads"
+    static let databaseColumnDecodingStrategy = DatabaseColumnDecodingStrategy.convertFromSnakeCase
+    static let databaseColumnEncodingStrategy = DatabaseColumnEncodingStrategy.convertToSnakeCase
+
+    var symbol: String
+    var mentorClaudeSessionId: String?
+    var updatedAt: String
+}
+
+/// One entry in a lane's thread — a system HUD snapshot (auto-logged on
+/// scan), a user comment, or a mentor reply. Oldest-first per symbol is the
+/// lane's whole conversation history.
+struct LaneUpdateRecord: Codable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "lane_updates"
+    static let databaseColumnDecodingStrategy = DatabaseColumnDecodingStrategy.convertFromSnakeCase
+    static let databaseColumnEncodingStrategy = DatabaseColumnEncodingStrategy.convertToSnakeCase
+
+    var id: String
+    var symbol: String
+    var ts: String                   // ISO8601
+    var kind: String                 // "system" | "user" | "mentor"
+    var text: String
+}
+
 struct ChopRecord: Codable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "chops"
     static let databaseColumnDecodingStrategy = DatabaseColumnDecodingStrategy.convertFromSnakeCase

@@ -59,6 +59,10 @@ struct UserSettings: Codable, Equatable {
     /// Open TradingView (with the CDP bridge flag) when Ledger starts and TV
     /// isn't already running. nil = on. A running TV is never touched.
     var launchTVWithLedger: Bool?
+    /// Saved TradingView layout ("SkuldLedger6x") Ledger switches to via
+    /// `tv layout switch` — but ONLY right after Ledger itself cold-starts
+    /// TradingView (see SessionStore.bootstrap()). nil/empty = no auto-switch.
+    var laneLayoutName: String?
 
     static var url: URL {
         Workspace.recordsDir.appendingPathComponent("user_settings.json")

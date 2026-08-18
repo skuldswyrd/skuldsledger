@@ -112,12 +112,28 @@ final class LevelSyncService {
         return levels.isEmpty ? .failure(.noLevels) : .success(levels)
     }
 
+    /// Cold-launch-only layout switch: `tv layout switch "<name>"`. Callers
+    /// (SessionStore.bootstrap()) must only invoke this right after Ledger
+    /// itself just cold-started TradingView — this method has no opinion on
+    /// that rule, it just shells the command out and reports the result.
+    /// Every `tv` CLI shelling stays in this one file/class.
+    func switchLayout(named name: String) async -> Result<Void, LevelSyncError> {
+        guard let cli = Self.locateCLI() else { return .failure(.cliNotFound) }
+        switch await runProcess(cli: cli, args: ["layout", "switch", name], timeout: 20) {
+        case .success:
+            return .success(())
+        case .failure(let err):
+            return .failure(err)
+        }
+    }
+
     /// Every pane in the current TradingView multi-chart layout, one at a
     /// time: `pane list` for the roster, then per pane `pane focus` + a
     /// settle beat + the same `data labels`/`data tables` reads as the
-    /// single-pane path. Manual, user-triggered only (Scanner sheet) — a
-    /// full 6-pane sweep legitimately takes 20-40s and must never ride the
-    /// 5-minute auto-timer.
+    /// single-pane path. Triggered by the Lanes sheet's "Scan All" button OR
+    /// automatically every 15 minutes ET while a session is open (see
+    /// SessionStore.checkLaneAutoRefresh) — a full 6-pane sweep legitimately
+    /// takes 20-40s and must never ride the 5-minute single-pane auto-timer.
     func scanAllPanes() async -> Result<[ScanResult], LevelSyncError> {
         guard let cli = Self.locateCLI() else { return .failure(.cliNotFound) }
 

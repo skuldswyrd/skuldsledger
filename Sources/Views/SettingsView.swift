@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var maxLossText: String = ""
     @State private var defaultInstrument: Instrument?
     @State private var launchTV = true
+    @State private var laneLayoutName: String = ""
     /// Raw plan (no settings overlay) — shows the true plan defaults beside
     /// each knob. store.plan is already overlaid, so it can't serve here.
     @State private var basePlan = TradingPlan()
@@ -31,6 +32,7 @@ struct SettingsView: View {
                     minRankRow
                     instrumentRow
                     tvLaunchRow
+                    laneLayoutRow
                     environmentCard
                 }
                 .padding(16)
@@ -54,6 +56,7 @@ struct SettingsView: View {
         maxLossText = s.dailyMaxLossUsd.map(Self.plainMoney) ?? ""
         defaultInstrument = s.defaultInstrument.flatMap(Instrument.init(rawValue:))
         launchTV = s.launchTVWithLedger ?? true
+        laneLayoutName = s.laneLayoutName ?? ""
         basePlan = TradingPlan.load(from: Workspace.planURL)
     }
 
@@ -65,6 +68,8 @@ struct SettingsView: View {
         s.minRankToTrade = minRank
         s.defaultInstrument = defaultInstrument?.rawValue
         s.launchTVWithLedger = launchTV ? nil : false   // nil = default on
+        let trimmedLayout = laneLayoutName.trimmingCharacters(in: .whitespacesAndNewlines)
+        s.laneLayoutName = trimmedLayout.isEmpty ? nil : trimmedLayout
         store.saveSettings(s)
         dismiss()
     }
@@ -284,6 +289,24 @@ struct SettingsView: View {
                     .foregroundColor(launchTV ? Theme.cyan : Theme.textDim)
                 Spacer()
             }
+        }
+    }
+
+    private var laneLayoutRow: some View {
+        settingRow(
+            "LANE LAYOUT NAME",
+            caption: "Empty = Ledger never switches layouts. Set = on a COLD launch only (TradingView wasn't already running), Ledger switches to this saved layout once the bridge comes up. A running TradingView is never touched."
+        ) {
+            TextField("e.g. SkuldLedger6x", text: $laneLayoutName)
+                .textFieldStyle(.plain)
+                .font(Theme.mono)
+                .foregroundColor(Theme.text)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.inset))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.cardBorder, lineWidth: 1))
+                .help("The saved TradingView layout name Ledger switches to — but ONLY right after Ledger itself cold-starts TradingView. Never on a manual TV open, never when TV was already running.")
         }
     }
 

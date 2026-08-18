@@ -98,6 +98,18 @@ enum Workspace {
         return (c.hour ?? 0) * 60 + (c.minute ?? 0)
     }
 
+    /// Most recent 15-minute ET boundary at or before `now` (:00/:15/:30/:45,
+    /// seconds zeroed) — Lanes' auto-refresh gate rides real bar closes
+    /// instead of wall-clock drift off the app's own launch time.
+    static func mostRecentQuarterHourET(now: Date = Date()) -> Date {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = eastern
+        var comps = cal.dateComponents([.year, .month, .day, .hour, .minute], from: now)
+        comps.minute = ((comps.minute ?? 0) / 15) * 15
+        comps.second = 0
+        return cal.date(from: comps) ?? now
+    }
+
     @discardableResult
     static func ensureDayFolders(_ date: String) -> Bool {
         let fm = FileManager.default

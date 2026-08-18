@@ -164,6 +164,28 @@ final class AppDatabase {
             try db.execute(sql: "ALTER TABLE levels ADD COLUMN instrument TEXT;")
         }
 
+        // Lanes: one persistent thread PER RAW PANE SYMBOL ("MNQ1!",
+        // "XAUUSD", ...) — not the app's Instrument enum, which has no case
+        // for three of the six real symbols (XAUUSD, NAS100 CFD, USDCAD).
+        // Keying on the raw string sidesteps that limitation entirely.
+        migrator.registerMigration("v7") { db in
+            try db.execute(sql: """
+                CREATE TABLE lane_threads (
+                  symbol TEXT PRIMARY KEY,
+                  mentor_claude_session_id TEXT,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE TABLE lane_updates (
+                  id TEXT PRIMARY KEY,
+                  symbol TEXT NOT NULL,
+                  ts TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  text TEXT NOT NULL
+                );
+                CREATE INDEX idx_lane_updates_symbol ON lane_updates(symbol);
+                """)
+        }
+
         return migrator
     }
 
@@ -403,6 +425,33 @@ final class AppDatabase {
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM blog_posts WHERE id = ?", arguments: [id])
         }
+    }
+
+    // MARK: - Lane threads (Lanes screen — one persistent thread per raw pane symbol)
+
+    /// A lane's full thread, oldest first — system HUD snapshots, user
+    /// comments and mentor replies interleaved by ts.
+    func laneUpdates(symbol: String) throws -> [LaneUpdateRecord] {
+        try dbQueue.read { db in
+            try LaneUpdateRecord
+                .filter(Column("symbol") == symbol)
+                .order(Column("ts").asc)
+                .fetchAll(db)
+        }
+    }
+
+    func save(_ update: LaneUpdateRecord) throws {
+        try dbQueue.write { db in try update.save(db) }
+    }
+
+    func laneThread(symbol: String) throws -> LaneThreadRecord? {
+        try dbQueue.read { db in
+            try LaneThreadRecord.filter(Column("symbol") == symbol).fetchOne(db)
+        }
+    }
+
+    func save(_ thread: LaneThreadRecord) throws {
+        try dbQueue.write { db in try thread.save(db) }
     }
 
     // MARK: - Chops
