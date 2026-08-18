@@ -112,6 +112,9 @@ struct TradingPlan {
     var lunchEndMin: Int = 13 * 60 + 30
     /// nil = UNDEFINED in the plan (open_items #3). Surface, never invent.
     var dailyMaxLossUsd: Double?
+    /// Risk per trade as a percent of account (ONE-edge doctrine: 0.25-0.75).
+    /// Default 0.5 when the plan JSON lacks `risk_pct_per_trade`.
+    var riskPctPerTrade: Double = 0.5
     var startingCapital: Double = 1000
     var autoTune: [String: AutoTune] = [:]
     var milestones: [Milestone] = []
@@ -174,6 +177,12 @@ struct TradingPlan {
         if let levelSystem = obj["level_system"] as? [String: Any] {
             plan.minRankToTrade = intVal(levelSystem["min_rank_to_trade"]) ?? 6
         }
+
+        // Risk % per trade: risk.risk_pct_per_trade, top-level fallback,
+        // default 0.5 when the plan JSON lacks it.
+        plan.riskPctPerTrade = dblVal((obj["risk"] as? [String: Any])?["risk_pct_per_trade"])
+            ?? dblVal(obj["risk_pct_per_trade"])
+            ?? 0.5
 
         if let risk = obj["risk"] as? [String: Any],
            let rules = risk["rules"] as? [[String: Any]] {

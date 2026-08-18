@@ -64,6 +64,7 @@ enum ReportGenerator {
             lines.append("| Instruments traded | \(cell(traded)) |")
         }
         lines += [
+            "| Edge | Session VWAP mean reversion (SKULD 3.0) |",
             "| IB range | \(ib) |",
             "| Status | \(cell(session.status.uppercased())) |",
             "| Plan | v\(cell(plan.version)) · pace baseline \(plan.maxTradesPerDay)/day · min rank \(plan.minRankToTrade) |",

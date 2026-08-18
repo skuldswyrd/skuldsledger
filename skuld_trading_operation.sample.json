@@ -30,32 +30,15 @@
     "name": "Price Reactions at Ranked Structural Levels",
     "thesis": "NY session NQ respects ranked structural levels in BOTH directions: reactions AWAY from a level (reaction wicks larger than the 32-tick target) and the pull INTO a powerful level once price is within the approach window. The stronger the level, the more it earns trades toward and away from it. Wait for price to engage a ranked level, take the fixed-tick trade, exit at target. Patience is the edge.",
     "plays": {
-      "IB": {
-        "role": "THE set play — only breakout play traded",
-        "rule": "IB = 09:30-10:30 range. N consecutive closes beyond IBH/IBL (default 2) = acceptance. Enter break direction on the acceptance close. Max 1 signal per side per day.",
-        "target": "standard target ticks",
-        "stop": "standard stop ticks"
-      },
       "MR": {
-        "role": "default play — everything that is not the IB break",
-        "rule": "Price approaches a cluster with rank >= minimum (default 4). Wick tags the level (within tolerance), does NOT pierce deeper than stop distance, close rejects back on the original side with close in the rejection zone (top 40% of bar for longs, bottom 40% for shorts). Enter reaction direction.",
-        "confirm": "volume footprint on DOM/orderflow platform: bottom-heavy = buyers = long reaction, top-heavy = sellers = short reaction. Pine cannot see bid/ask footprint — indicator proxies with close-position + optional relative volume. Footprint stays a manual eyes-on check.",
-        "target": "standard",
-        "stop": "standard; a CLOSE through the level = level broken, stand down on that level"
-      },
-      "BRT": {
-        "role": "continuation play — the punch-through case. OFF by default in the indicator until validated.",
-        "rule": "Level punched (confirmed close beyond by escape margin), then price retests it from the other side within the watch window and holds on close. Enter continuation using the broken level as the launch point. One shot per level per escape.",
-        "target": "standard",
-        "stop": "standard"
-      },
-      "APP": {
-        "role": "toward play — ride INTO a powerful level once close. Strength scales the pull.",
-        "rule": "A cluster with rank >= min_rank_approach sits roughly one target distance ahead (approach window: 1.0-1.5x target points). Price traveling toward it (with-move close, not fresh-rejected at it). Enter toward the level; target lands at/just in front of it. Logic: 32t in front of a strong level nearly always gets wicked; when it doesn't, the trade quality still justified the stop.",
-        "min_rank_approach": 8,
-        "target": "standard target ticks",
-        "stop": "standard; NEVER hold through the level — the level is the exit. Reaction there is a new decision (possible MR the other way).",
-        "status": "manual play for now — journal as APP; indicator signal + backtest validation queued"
+        "role": "THE ONE EDGE — session VWAP mean reversion (SKULD 3.0). Everything else is OFF (outside the edge, honest tag).",
+        "regime": "ADX(14) < 25 = full trading; 25-30 = extreme-only (strict RSI 25/75); > 30 = no trade",
+        "stretch": "price stretched from session VWAP by >= 1.5 sigma (or the ATR-based equivalent)",
+        "trigger": "RSI(7) <= 30 for longs / >= 70 for shorts (25/75 in extreme-only regime)",
+        "rule": "Stretched price tags a SKULD key level and prints a rejection candle there. Enter the reversal back toward session VWAP.",
+        "stop": "beyond the stretch extreme",
+        "target": "session VWAP, or the first working level before it — never hold through a working level",
+        "risk": "0.25-0.75% of account per trade"
       }
     },
     "direction_rules": [
@@ -83,9 +66,10 @@
       "1": "< 4 (session HVN/LVN)"
     },
     "min_rank_to_trade": 6,
-    "break_rule": "confirmed close through a cluster beyond escape margin = broken. Never fade a broken level twice. Broken level = BRT launch-pad candidate."
+    "break_rule": "confirmed close through a cluster beyond escape margin = broken. Never take the reversal at a broken level twice."
   },
   "risk": {
+    "risk_pct_per_trade": 0.5,
     "rules": [
       {
         "rule": "Max trades per day",
@@ -209,7 +193,7 @@
       "Footprint check on DOM at the touch (manual — indicator proxy is not a footprint)",
       "Take signal, orders at plan lines: entry, fixed stop, fixed target",
       "Exit at target. Screenshot. Journal line.",
-      "Close through a level = broken: no re-fade, watch for BRT diamond",
+      "Close through a level = broken: no reversal re-entry there",
       "3 trades done = done. Panel says DONE."
     ],
     "end_of_day": [
@@ -221,7 +205,7 @@
   "journal_schema": {
     "per_trade": [
       "timestamp",
-      "play (IB/MR/BRT/APP)",
+      "play (MR/OFF)",
       "cluster name + stars",
       "entry/stop/target",
       "exit price",

@@ -76,6 +76,11 @@ final class SessionStore: ObservableObject {
     @Published var composingSession = false
     /// Entry ids with a mentor call in flight ("thinking..." on the card).
     @Published private(set) var mentorBusy: Set<String> = []
+    /// Latest pre-trade EDGE CHECK verdict (GO/WAIT/NO + reason), shown in
+    /// the composer strip. nil = none yet.
+    @Published var preCheckReply: String?
+    /// True while a pre-trade edge check is in flight.
+    @Published var preCheckBusy: Bool = false
     @Published var errorMessage: String? {
         didSet {
             // Every surfaced app error also lands in the upgrade log —
@@ -556,6 +561,38 @@ final class SessionStore: ObservableObject {
     func retryMentor(entryId: String) {
         guard let entry = entries.first(where: { $0.id == entryId }) else { return }
         requestMentor(for: entry)
+    }
+
+    /// Pre-trade EDGE CHECK: GO / WAIT / NO against the one-edge checklist.
+    /// Fresh mentor conversation every time — never resumed.
+    func preTradeCheck(adx: Double?, stretchSigma: Double?, rsi: Double?,
+                       levelName: String?, levelScore: Double?, side: String) {
+        guard let mentor, mentorAvailable, !preCheckBusy else { return }
+        preCheckBusy = true
+        preCheckReply = nil
+        let instrument = session?.instrument ?? lastUsedInstrument?.rawValue ?? "NQ"
+        let planSnapshot = plan
+        Task { [weak self] in
+            let outcome = await mentor.preTradeCheck(
+                instrument: instrument,
+                adx: adx,
+                stretchSigma: stretchSigma,
+                rsi: rsi,
+                levelName: levelName,
+                levelScore: levelScore,
+                side: side,
+                plan: planSnapshot)
+            await MainActor.run {
+                guard let self else { return }
+                self.preCheckBusy = false
+                switch outcome {
+                case .success(let result):
+                    self.preCheckReply = result.reply
+                case .failure(let err):
+                    self.preCheckReply = "NO — check failed: \(err.localizedDescription)"
+                }
+            }
+        }
     }
 
     // MARK: - Comment threads (user <-> mentor, per post)

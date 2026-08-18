@@ -55,7 +55,7 @@ enum StatsQueries {
             .filter { $0.signals > 0 }
 
         // Play-type table: only plays actually present today. Canonical
-        // IB/MR/BRT order first, any off-book play strings after.
+        // MR/OFF order first, any legacy play strings (IB/BRT/APP) after.
         var playBuckets: [String: SessionStats.PlayRow] = [:]
         for trade in trades {
             var row = playBuckets[trade.playType]

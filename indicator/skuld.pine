@@ -1,278 +1,86 @@
 //@version=6
 // ═══════════════════════════════════════════════════════════════════════════
-//  SKULD — one indicator, self-switching by chart timeframe.
-//  Primary chart of record: 30-minute (2026-08-07 — levels give the entry
-//  precision; the bar TF gives the signal QUALITY. Everything bar-based
-//  scales with the chart: reaction window, validity, cooldown, velocity).
+//  SKULD 3.0 — VWAP MEAN REVERSION. ONE EDGE.
+//  v3.0.0 (2026-08-12)
 //
-//  v2.9.3 (2026-08-10): TARGETS ARE LEVELS, PERIOD.
-//   · Open-field fallback (entry ± tpCap×dATR) removed — no qualifying
-//     level ahead = NO TRADE. Every T1 is the front edge of a real level.
-//   · Believability cap: the target level must sit within inTpMaxT ticks
-//     (default 100). Farther = no trade; the target is never truncated to
-//     a mid-air price.
-//   · HUD SIGNAL block gains a FROM row — the level that produced the
-//     signal, gold, full text in the tooltip. ROOM row prints "no lvl"
-//     when a side has no reachable target level.
-//  v2.9.2 (2026-08-10): BRT GROWS UP — a wick through VWAP is not a
-//     break-retest. Break now requires ACCEPTANCE (inAcc consecutive closes
-//     beyond the escape margin, IB's standard, signed counter per cluster);
-//     the retest requires SEPARATION (min bars after the accepted break),
-//     DEPTH (low reaches within half a cluster width of the level),
-//     REJECTION (MR's close-position standard on the retest bar) and an
-//     EffScore ≥ the regime trade floor from the approach side. Chop that
-//     pokes one close through and dips a wick no longer fires.
-//  v2.9.1 (2026-08-10): SIGNAL LIFECYCLE — a ticket is a resting limit,
-//     track it like one. Fill (price returns to E) must happen before SL/TP
-//     count — unfilled tickets can no longer stamp "TP ✓". Price tags T1
-//     without filling = "RAN — unfilled" dim stamp, ticket AND HUD signal
-//     clear instantly (WAITING shows the next levels instead of a stale
-//     BUY block screaming over a finished move). Session-gap exit also
-//     clears the HUD.
-//  v2.9.0 (2026-08-07): CONSISTENCY — the last fixed ticks die · TWAP.
-//   · Outcome stamps print the TICKET'S OWN distances (planE/T1/S ticks),
-//     not the legacy 32/48 — no more "TP ✓ +32t" under a taller T1 line.
-//   · APP is ADVISORY now: dim label + one-shot per level, no ticket, no
-//     count, no alert. It was the last play still emitting fixed-tick
-//     E/S/T. A chase has no structure behind the entry — it gets a read.
-//   · Session TWAP: time-weighted average since session open — dim line
-//     beside VWAP + rank-6 pool level (toggle). VWAP+TWAP agreeing = one
-//     strong magnet; split wide = volume arrived away from time-average.
-//   · TUNE debug row shows regime truth (dATR · width · tier) instead of
-//     the legacy tick pair; the tick inputs are relabeled LEGACY seeds.
-//  v2.8.0 (2026-08-07): BRT JOINS THE VOICE · HUD REBUILT TO THE DECK SPEC.
-//   · BRT (break-retest) ON by default and fires through dynamic
-//     construction: retest of a punched cluster holds → entry at the
-//     cluster edge, structure stop, TP1 in front of the next qualifying
-//     level, room gate. Room fails → NOTRADE, cluster state stays armed so
-//     a later retest inside the watch window retries. Six alertconditions:
-//     BUY/SELL MR · IB · BRT, one pipe format.
-//   · HUD rebuilt (the teaching-deck mockups won): header row "SKULD ·
-//     SYMBOL TF | WAITING/SIGNAL/STRUCTURE", aligned columns (side+name ·
-//     price · ±dist · score), ▲ short zone purple · ▼ long zone green,
-//     gold scores, ROOM row shows the available ticks per side (L OK·34t),
-//     SIGNAL grid labels E/S/T1/R individually colored (S red · T1 green ·
-//     R cyan), VALID shown as a clock (mm:ss). Table rebuilt on the last
-//     bar — no stale cells between states.
-//  v2.7.0 (2026-08-07): IB JOINS THE VOICE · REACT DE-SPAM · BRIGHTER SIGNAL.
-//   · IB play fires through the SAME dynamic construction as MR: entry =
-//     broken IB edge (retest resting limit), structure stop inside the
-//     balance, TP1 in front of the next opposing qualifying level, room
-//     gate included ("see money, take money" on breakouts too). Room fails
-//     → NOTRADE event and the per-side shot is NOT consumed — a later
-//     re-acceptance retries with fresh room. Four alertconditions now:
-//     BUY/SELL MR + BUY/SELL IB, same pipe format. Two-play coverage:
-//     MR eats balance days, IB eats trend days.
-//   · REACT labels print only at/above a score threshold (input, default
-//     75 — the defended touches). Every score still computes and feeds
-//     stats, gates and the feed; the chart just stops wallpapering 0% ✗.
-//   · APPR chart labels: DRIVE (freight train) only by default — GRIND /
-//     DRIFT stay in the HUD/feed (toggle restores 2.6 behavior).
-//   · Signal brightness: chart fire label fully opaque; HUD SIGNAL block
-//     fill stronger, E/S/T1/R row larger.
-//  v2.6.0 (2026-08-07): DYNAMIC TARGETING — every level carries a live,
-//     directional, regime-aware EFFECTIVE SCORE; the only outputs are the
-//     few levels in play and a limit-order-ready MR signal with a dynamic
-//     TP1 at the next working level ("see money, take money").
-//   · EFFECTIVE SCORE engine: per-atomic-level reaction memory, keyed by
-//     stable identity (names; HVN/LVN by price bucket), per approach
-//     direction (fromBelow |B · fromAbove |A). Touch outcomes (HOLD/BREAK,
-//     resolved over a 3-bar window) feed an EWMA hold rate; score =
-//     baseRank × clamp(0.5 + holdRate, 0.5, 1.5) × 0.85^touchesToday.
-//     A low-rank level broken 3+ times decays below thresholds and leaves
-//     the chart — breaking finally has a consequence.
-//   · REGIME engine: daily ATR(14) percentile (60-day window) + VIX bump
-//     → LOW/NORM/HIGH/EXTREME tier. Tier sets cluster width (×dATR),
-//     display/trade score floors, TP floor/cap and stop buffer. Width
-//     recomputes only at session boundaries or tier change (no identity
-//     churn). All cut points and table values are inputs.
-//   · DYNAMIC TRADE CONSTRUCTION (MR): entry = cluster edge offset into
-//     the zone (resting-limit workflow) · stop = far edge + buffer×dATR ·
-//     TP1 = front edge of the FIRST opposing qualifying cluster minus a
-//     standoff — never through a working level. Room gate: tpDist ≥
-//     max(minR × stopDist, tpFloor × dATR) or NO TRADE (never skip to the
-//     next cluster). Open field → TP1 = entry ± tpCap × dATR. R emitted.
-//   · MR SIGNAL GATES: EffScore ≥ minTradeScore · room gate · initiative
-//     standdown (approach velocity + consecutive closes) · lower-TF delta
-//     standdown (one-sided flow into the level = absorption absent).
-//   · EXECUTION display: only the nearest K qualifying clusters per side
-//     (EffScore ≥ minDisplayScore), labels carry score + directional
-//     record (3H/1B). STRUCTURE mode keeps the full map. Imbalance boxes
-//     hidden by default (real footprint lives on another chart).
-//   · HUD: trade-entry info only — nearest qualifying level each side +
-//     ROOM check while waiting; E/S/T1/R + validity countdown on signal.
-//     The old 13-row system panel moved behind showDebugHud.
-//   · ALERTS (2.6; 2.7 adds IB): pipe-delimited with E/S/TP1/R/level/
-//     score, readable off a phone.
-//     APP/BRT plays still detect and draw, but no longer alert. The
-//     ledger feed events are opt-in now (feedAlerts default OFF); NOTRADE
-//     events report room-gate kills.
-//  v2.5.2 (2026-08-06): label offset default 1 bar — level labels hug the
-//     current candle instead of floating off-screen right.
-//  v2.5 (2026-08-06): ALL SESSIONS — Asia · London · NY are first-class.
-//   · Per-session VWAP + σ bands: reset at each session open, live in every
-//     session (the extension-zone reference finally exists off-NY).
-//   · Per-session Initial Balance: the first N minutes (input, 60) of
-//     WHICHEVER session just opened. IB play, IB row and the day-type IB
-//     component now work in all three sessions.
-//   · Signal pools use the LIVE session's H/L (sesH/sesL, rank 8) instead of
-//     the NY-only day extremes.
-//   · Sessions-only signal window (default ON, per the trader's ask): the
-//     16:00-18:00 ET settlement gap pauses signals; Asia open resumes them.
-//   · The trading day starts at the Asia open (18:00 ET): signal counter
-//     and plan drawings reset there, not at the NY open.
-//   · Session naming stays ASIA everywhere (his call).
-//     and level-name history key off them).
-//  v2.4.2 (2026-07-30): REACT prints as a percent ("REACT 11% ✗") on the
-//     label and the row — the score is the share of possible defense
-//     evidence at the touch. The feed keeps the raw number (score=11).
-//  v2.4.1 (2026-07-30): STAMP renamed REACT everywhere user-facing — the
-//     number is a 0-100 reaction-quality score (share of possible defense
-//     evidence), NOT a touch count; the old word read like one. Touch
-//     counts stay separate (·T2 on NEAREST). Feed event is EVT=REACT.
-//  v2.4 (2026-07-30): DAY TYPE · APPROACH GRADE · TOUCH REACT · LEDGER FEED.
-//   All three features are ADVISORY/DISPLAY-ONLY at defaults — with every new
-//   toggle at its default the script's signals, levels, rows and drawings
-//   behave exactly as v2.3 (the new rows and feed alerts are the only
-//   additions). Enforcement is opt-in.
-//   · DAY TYPE row: BALANCE / TREND▲ / TREND▼ / TRANSITION per session.
-//     Components: open vs prior value, IB extension hold, value migration,
-//     15m one-timeframing, cumulative session delta trend — summed to a
-//     score T with a participation gate (session range vs ADR(10)) and
-//     2-evaluation hysteresis. Optional play matrix (OFF / ADVISORY /
-//     ENFORCE): reversal-at-level benched against strong trend, break-retest
-//     benched in balance; benched signals stay counted via the feed.
-//   · APPR row (execution only): how price is ARRIVING at the next ranked
-//     cluster — DRIVE (fast, directional, shallow pullbacks), GRIND
-//     (rotational two-way), DRIFT (thin, low participation) from path
-//     efficiency, speed vs ATR, max pullback and delta alignment over the
-//     approach window. Playbook hint lives in the tooltip, logic untouched.
-//   · TOUCH STAMP (execution only): at a ranked-cluster touch, score the
-//     evidence 0-100 the same way every time — delta flip vs the approach
-//     (30), where the touch bar's volume sat in its range (25, an
-//     APPROXIMATION of footprint order flow from lower-TF volume — Pine
-//     cannot read true bid/ask), rejection structure on the close (25),
-//     effort/result divergence (20). ✓ ≥70 · – 40-69 · ✗ <40, printed at
-//     the touch and in the STAMP row. Optional MR gate ships OFF.
-//   · LEDGER FEED: pipe-delimited alert() events (TOUCH / STAMP / DAYTYPE /
-//     APPR / BENCHED) + per-level daily touch counter — the journal's data
-//     feed. Request budget unchanged: still ONE lower-TF call (tuple now
-//     carries hl2 for the stamp bins).
-//  v2.3 (2026-07-30): CLOCK + ZONE FRESHNESS — tournament-ledger-driven.
-//   · CLOCK row + cold-hour tag: prime hours (default 0800-1030 ET) vs cold
-//     hours (default 0000-0100, 0700-0800, 1100-1200, 1500-1600 ET — the
-//     ledger's proven bleed windows) on the dashboard; alerts fired in cold
-//     hours carry a "COLD HOUR" tag. Info only, session inputs, retune as
-//     the data moves. Nothing is ever blocked.
-//   · Zone freshness decay: every pass through a zone consumes the resting
-//     orders that made it. Zones now count touches — first touch DIMS the
-//     box (the trade was that touch), N touches (default 2) retires it.
-//     Close-through the far side still kills instantly. Fresh + untouched =
-//     trustworthy; chopped-through repeatedly = gone, not wallpaper.
-//  v2.2.1 (2026-07-30): zone tune after first live day — zone = origin
-//     THIRD of the impulse body (not the whole body; trend days painted the
-//     chart solid), duplicate same-side overlapping zones suppressed,
-//     defaults tightened (share 0.80, vol 1.2x, max 4/side).
-//  v2.2 (2026-07-30): READABILITY + IMBALANCE ZONES.
-//   · Right-edge fit: label offset default 3 bars (was 8) — lines/labels sit
-//     next to price on every chart style, footprint included.
-//   · Dashboard: position selectable (any corner) + brand palette (dark card,
-//     colored state text — no more stock green/red fills).
-//   · Signals: ONE clean label per fire (play + direction + score), brand
-//     colors, size selectable. Triangles/plotshapes and the long plan text
-//     label are gone. Plan lines (E/S/T) + outcome stamps stay. Stop line is
-//     red now; purple stays the short-direction brand color.
-//   · IMBALANCE ZONES (footprint proxy): per-bar buy/sell volume split from
-//     the lower-TF feed already powering the profiles. A bar whose one-sided
-//     volume share ≥ ratio (default 75%) on real volume prints a zone box
-//     (bar body, extended right) — the Pine approximation of stacked
-//     footprint imbalances. Zones die when price closes through the far
-//     side. Clusters sitting inside a live zone get +2 rank (input) and a ◆
-//     tag — level + resting imbalance = the confluence you trade toward.
-//     NOTE: Pine cannot read the chart's own footprint boxes — this proxy is
-//     computed from lower-TF up/down volume instead.
+//  DOCTRINE: price stretched from session VWAP (σ or range), landing ON a
+//  scored SKULD level, RSI exhausted, rejection close confirmed, in a regime
+//  where mean reversion is allowed → resting limit back to VWAP. That's it.
 //
-//  v2.1 (2026-07-21): APP toward-play — ride INTO a powerful level once
-//     inside the approach window (1.0-1.5x target). With-move close, level
-//     untouched in the lookback, one shot per level. Target lands at/just in
-//     front of the level — never hold through it.
-//  v2 (2026-07-21): DEVELOPING LEVELS ENGINE + VP visual overhaul.
-//   · Live developing levels are first-class ranked levels now:
-//       sPOC  (developing session POC)  rank 6 (session 1 + POC 5)
-//       sVAH/sVAL (developing session VA) rank 4 (session 1 + VA 3)
-//       dPOC  (developing DAY POC)        rank 8 (day 3 + POC 5)
-//       dVAH/dVAL (developing day VA)     rank 6 (day 3 + VA 3)
-//     Recomputed on every confirmed close from the fine-bin profiles,
-//     drawn + ★-labeled, included in the MR pool and NEAREST panel.
-//     The chart finally reacts to the CURRENT session, not just priors.
-//   · VP style input: "Lines" (default — clean, draw your own profiles),
-//     "Bars" (right-edge anchored, borderless thin rows), "Off".
-//   · Defaults follow the 2026-07-21 shipped tuning: wick 0.55, cooldown 5,
-//     tol 2×W, lunch/RTH-only/hard-cap gates OFF (all are toggles — flip for
-//     strict plan mode). Dev-level signals test the LAST CONFIRMED level
-//     snapshot; dev lines refresh on the first confirmed close after a
-//     session roll (one live bar of lag at the boundary is by design).
+//  WHAT DIED IN 3.0 (one edge only):
+//   · IB play · BRT play · APP play/advisory (IBH/IBL stay as LEVELS)
+//   · imbalance zones engine + boxes + ◆ bonus
+//   · day-type engine (D1-D5, gate matrix, tint) · APPR grades
+//   · TOUCH REACT scoring + labels
+//   · ledger feed events (only NOTRADE survives, opt-in)
+//   · VP histogram "Bars" mode (developing POC lines survive)
+//   · CLOCK prime/cold hours · lunch blackout
+//   · legacy tick seeds (inTgtT/inStopT) · volume-multiple MR filter
+//   · the 14-row debug HUD (4-row REGIME/ADX/STRETCH/GATES debug instead)
 //
-//  ≥ switch TF (default 1H)  → STRUCTURE mode: weekly + daily ranked level
-//     map, composite profile, clusters. No signals — this is the map.
-//  < switch TF               → EXECUTION mode: session VWAP ±1σ/±2σ, ranked
-//     level clusters, developing levels, and the plays:
-//       IB  — THE set play: initial-balance acceptance break (9:30–10:30 ET)
-//       MR  — everything else: reaction wick at a high-rank cluster
-//       BRT — punched level retested from the other side and held
-//       APP — approach: ride into a powerful level inside the window
+//  KEPT FROM 2.9.x (working machinery, verbatim):
+//   · sessions NY/LDN/ASIA · trading day at Asia open · per-session VWAP ±σ
+//     (±3σ optional now) · session TWAP
+//   · regime engine: daily ATR(14) percentile + VIX bump → tier → cluster
+//     width / display+trade floors / TP floor+cap / stop buffer
+//   · level pool: prior day/week/session profile clusters + dynamic
+//     singletons (VWAP 10 · sesH/L 8 · dPOC 8 · TWAP 6 · ±2σ 6 · ONH/L 6 ·
+//     dVA 6 · sPOC 6 · sVA 4 · IBH/L 4 — levels only, no plays)
+//   · EFFECTIVE SCORE: per-atom directional reaction memory (EWMA hold rate,
+//     freshness decay, epoch scope resets) — untouched
+//   · STRUCTURE mode ≥ 1H (map, no signals) · EXECUTION mode nearest-K render
+//   · dynamic ticket construction (adapted: T1 = session VWAP, never through
+//     a working level, 100-tick believability cap, room gate)
+//   · fill-aware plan lifecycle (resting limit; RAN-unfilled clears)
+//   · deck-spec HUD (WAITING/SIGNAL/STRUCTURE + FROM row) + GATES row
+//   · alert() pipe format + 2 alertconditions (BUY MR / SELL MR)
 //
-//  LEVEL RANKING:  rank = scope + kind.
-//     scope: session 1 · day 3 · week 5
-//     kind:  POC 5 · VAH/VAL 3 · H/L 3 · HVN 2 · LVN 1
-//     dynamic (fixed): VWAP 10 · day H/L 8 · dPOC 8 · ±2σ 6 · ONH/ONL 6 ·
-//                      sPOC 6 · dVAH/dVAL 6 · IB 4 · sVAH/sVAL 4
-//  CLUSTERING: levels within cluster width merge; rank = SUM; price =
-//     rank-weighted mean. stars: ≥10 ★★★★★ · 8–9 ★★★★ · 6–7 ★★★ · 4–5 ★★ · ★
+//  THE EDGE (all confirmed-bar, no repaint):
+//   1 REGIME   ADX(14): <25 FULL · 25-30 EXTREME-ONLY · ≥30 NO MR
+//   2 STRETCH  |close−VWAP| ≥ 1.5σ (session σ) OR ≥ 0.35×ATR14
+//   3 TRIGGER  RSI(7) ≤30 long / ≥70 short (25/75 strict), 2-bar window
+//   4 LEVEL    the stretch lands ON a pool level, EffScore ≥ trade floor
+//              (+2 in EXTREME-ONLY) — ±2σ bands are pool levels themselves
+//   5 CONFIRM  rejection close (wick logic) + initiative & delta standdowns
+//   6 TICKET   E = level edge into zone · S = beyond far edge + buffer AND
+//              beyond the touch extreme · T1 = VWAP, standoff in front of
+//              any working level in between (T2 = VWAP then) · room gate
 //
-//  Candle-close confirmed only. No lookahead. No repaint.
-//  One alert covers all: "Any alert() function call".
+//  Chart of record for signals: 15m. Candle-close confirmed only. No
+//  lookahead. No repaint. One alert covers all: "Any alert() function call".
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SKULD 2.9 — Dynamic Targeting · MR + IB + BRT", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("SKULD 3.0 — VWAP Mean Reversion", "SKULD", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
 // ── ASSET AUTO-TUNE ────────────────────────────────────────────────────────
 bool isES = syminfo.root == "ES" or syminfo.root == "MES"
 
 // ── INPUTS ─────────────────────────────────────────────────────────────────
 const string TZ = "America/New_York"
-const string GM = "Mode & trade math"
+const string GM = "Mode"
 const string GS = "Sessions (ET)"
 const string GP = "Profile engine"
 const string GK = "Level ranking & clusters"
-const string GV = "Session volume profile"
 const string GE = "Developing levels (live)"
-const string GW = "VWAP & dynamic levels"
-const string GI = "Play · IB (the set play)"
-const string GR = "Play · MR (reaction at level)"
-const string GB = "Play · BRT (break-retest continuation)"
-const string GA = "Play · APP (toward a powerful level)"
+const string GW = "VWAP & bands"
+const string GLP = "Level pool"
+const string GME = "3.0 · Mean Reversion Edge"
 const string GT = "Discipline & trade plan"
-const string GZ = "Imbalance zones (footprint proxy)"
-const string GY = "Day Type"
-const string GAPR = "Approach"
-const string GSTP = "Touch React (0-100)"
-const string GLF = "Ledger Feed"
-const string GD = "Dashboard"
-const string GC = "Colors & lines"
 const string GES = "Effective Score"
 const string GRG = "Regime (ATR + VIX)"
 const string GTC = "Trade Construction"
 const string GSG = "Signal Gates"
+const string GRK = "Risk (advisory)"
+const string GLF = "Ledger Feed"
+const string GD = "Dashboard"
+const string GC = "Colors & lines"
 
-string inModeTf = input.timeframe("60", "Structure mode at/above TF", group = GM, tooltip = "Chart TF >= this = STRUCTURE map (no signals). Below = EXECUTION mode.")
-int inTgtT  = input.int(0, "LEGACY width seed ticks (0 = auto: 32 NQ / 8 ES)", minval = 0, group = GM, tooltip = "NOT a trade target since 2.6 — every ticket's E/S/T1 is built dynamically from the regime engine (dATR tier). This only seeds cluster width before the first daily ATR arrives and sizes the APP advisory window.")
-int inStopT = input.int(0, "LEGACY stop seed ticks (0 = auto: 48 NQ / 12 ES)", minval = 0, group = GM, tooltip = "NOT a trade stop since 2.6 — stops are structure + regime buffer. Kept only for the MR touch-band fallback geometry.")
+string inModeTf = input.timeframe("60", "Structure mode at/above TF", group = GM, tooltip = "Chart TF >= this = STRUCTURE map (no signals). Below = EXECUTION mode. Chart of record for signals: 15m.")
 
-string rthSess   = input.session("0930-1600", "NY session (ET)", group = GS)
-int    inIbMin   = input.int(60, "Initial balance: minutes from EACH session open", minval = 15, maxval = 120, group = GS, tooltip = "Every session (Asia, London, NY) builds its own IB over its first N minutes. IB play, IB row and the day-type IB read follow the active session.")
-string onSess    = input.session("1800-0930", "Overnight (ONH/ONL)", group = GS)
-string sAsia     = input.session("1800-0300", "Asia session (ET)", group = GS)
-string sLdn      = input.session("0300-0930", "London session (ET)", group = GS)
+string rthSess = input.session("0930-1600", "NY session (ET)", group = GS)
+int    inIbMin = input.int(60, "Initial balance: minutes from EACH session open", minval = 15, maxval = 120, group = GS, tooltip = "IB is a LEVEL PAIR only since 3.0 (IBH/IBL rank 4 in the pool) — there is no IB play.")
+string onSess  = input.session("1800-0930", "Overnight (ONH/ONL)", group = GS)
+string sAsia   = input.session("1800-0300", "Asia session (ET)", group = GS)
+string sLdn    = input.session("0300-0930", "London session (ET)", group = GS)
 
 int    inRows  = input.int(24, "Extraction rows per profile", minval = 6, maxval = 60, group = GP)
 float  inVA    = input.float(70, "Value area %", minval = 50, maxval = 95, group = GP)
@@ -283,140 +91,61 @@ int    inMaxLV = input.int(1, "Max LVN per profile", minval = 0, maxval = 3, gro
 float  inBin   = input.float(0.0, "Fine bin pts (0 = auto: 1.0 NQ / 0.25 ES)", minval = 0, group = GP)
 string inLtf   = input.timeframe("", "Intrabar TF (blank = auto)", group = GP)
 
-float inClW     = input.float(0.0, "Cluster width pts (0 = auto: 25% of target)", minval = 0, group = GK)
-int   inMinRank = input.int(6, "Min rank to trade a level", minval = 1, maxval = 20, group = GK, tooltip = "MR/BRT fire only on clusters/levels at or above this rank. 6 = ★★★ up. 8 = ★★★★ up. 10 = ★★★★★ only.")
-bool  showLvls  = input.bool(true, "Draw cluster lines + labels", group = GK)
-int   inMaxL    = input.int(12, "Max clusters shown (nearest kept)", minval = 2, maxval = 40, group = GK)
-float inHide    = input.float(0, "Hide clusters farther than (pts, 0 = off)", minval = 0, group = GK)
-int   inOff     = input.int(1, "Label offset (bars right)", minval = 1, maxval = 50, group = GK, tooltip = "Bars between the last candle and the line end / label. 1 = hugging price. Bar-based, so it stays put at every zoom and every chart style, footprint included.")
-bool  showPx    = input.bool(true, "Show price in labels", group = GK)
+float inClW    = input.float(0.0, "Cluster width pts (0 = auto: regime tier × dATR)", minval = 0, group = GK)
+bool  showLvls = input.bool(true, "Draw level lines + labels", group = GK)
+int   inMaxL   = input.int(12, "Max clusters shown · STRUCTURE mode", minval = 2, maxval = 40, group = GK)
+float inHide   = input.float(0, "Hide clusters farther than (pts, 0 = off)", minval = 0, group = GK)
+int   inOff    = input.int(1, "Label offset (bars right)", minval = 1, maxval = 50, group = GK)
+bool  showPx   = input.bool(true, "Show price in labels", group = GK)
 
-string inVpStyle  = input.string("Lines", "Profile style", options = ["Lines", "Bars", "Off"], group = GV, tooltip = "Lines = no histogram, developing levels only (draw profiles by hand). Bars = borderless histogram. Off = nothing.")
-string inVpAnchor = input.string("Right edge", "Bars anchor", options = ["Right edge", "Session start"], group = GV)
-string inVpSrc    = input.string("Auto", "Profile source", options = ["Auto", "Session", "Day", "Week"], group = GV, tooltip = "Auto = active session in execution mode, developing week in structure mode.")
-int    inVpRows   = input.int(30, "Histogram rows", minval = 10, maxval = 60, group = GV)
-int    inVpWide   = input.int(14, "Histogram max width (bars)", minval = 5, maxval = 100, group = GV)
-
-bool showDevS   = input.bool(true, "Developing session POC/VAH/VAL (sPOC ★★★ · sVA ★★)", group = GE)
-bool showDevD   = input.bool(true, "Developing day POC/VAH/VAL (dPOC ★★★★ · dVA ★★★)", group = GE)
-bool inclDevMR  = input.bool(true, "Developing levels fire MR", group = GE, tooltip = "sPOC rank 6, sVAH/sVAL 4, dPOC 8, dVAH/dVAL 6 — gated by min rank like everything else.")
+bool showDevS  = input.bool(true, "Developing session POC line (sPOC)", group = GE)
+bool showDevD  = input.bool(true, "Developing day POC line (dPOC)", group = GE)
+bool inclDevMR = input.bool(true, "Developing levels join the pool", group = GE, tooltip = "sPOC rank 6, sVAH/sVAL 4, dPOC 8, dVAH/dVAL 6 — scored and tradeable like everything else. Only the POC lines draw; VA edges surface through the nearest-K render when they qualify.")
 
 bool showVwap = input.bool(true, "Session VWAP + ±1σ", group = GW)
 bool showSd2  = input.bool(true, "±2σ band", group = GW)
-bool showOn   = input.bool(true, "ONH/ONL lines", group = GW)
-bool inclTwap = input.bool(true, "Session TWAP — line + level (rank 6)", group = GW, tooltip = "Time-weighted average price since session open (execution-desk reference). Drawn dimmer than VWAP; joins the level pool at rank 6. VWAP + TWAP agreeing = one strong magnet; far apart = volume came in away from time-average, trend tell.")
+bool showSd3  = input.bool(false, "±3σ band", group = GW)
+bool inclTwap = input.bool(true, "Session TWAP — line + pool level (rank 6)", group = GW)
 
-bool enIB     = input.bool(true, "Enable IB play", group = GI)
-int  inAcc    = input.int(2, "Acceptance closes beyond IB", minval = 1, maxval = 5, group = GI)
-int  inMaxBrk = input.int(1, "Max IB signals per side per day", minval = 1, maxval = 3, group = GI)
+bool inclVwap = input.bool(true, "Pool: VWAP (rank 10)", group = GLP)
+bool inclSd2  = input.bool(true, "Pool: ±2σ (rank 6)", group = GLP)
+bool inclDay  = input.bool(true, "Pool: live session H/L (rank 8)", group = GLP)
+bool inclON   = input.bool(true, "Pool: ONH/ONL (rank 6)", group = GLP)
 
-bool  enMR     = input.bool(true, "Enable MR play", group = GR)
-float inWick   = input.float(0.55, "Rejection: close position ≥ (0.5–1)", minval = 0.5, maxval = 1, step = 0.05, group = GR, tooltip = "Long: close must sit in top fraction of bar range. Short mirrored.")
-float inMrTol  = input.float(0.0, "Touch tolerance pts (0 = auto: 2× cluster width — 4 NQ / 1 ES)", minval = 0, group = GR)
-bool  useVolMR = input.bool(false, "Require volume ≥ × avg (footprint proxy)", group = GR)
-float volKMR   = input.float(1.2, "Volume multiple", step = 0.1, group = GR)
-bool  inclVwap = input.bool(true, "Include VWAP (rank 10)", group = GR)
-bool  inclSd2  = input.bool(true, "Include ±2σ (rank 6)", group = GR)
-bool  inclDay  = input.bool(true, "Include live session H/L (rank 8)", group = GR)
-bool  inclON   = input.bool(true, "Include ONH/ONL (rank 6)", group = GR)
+// ── THE EDGE ── one setup: session-VWAP mean reversion at structure
+bool  enMR             = input.bool(true, "Enable MR signals", group = GME)
+float adxGreen         = input.float(25, "ADX < this = FULL MR", minval = 5, maxval = 60, group = GME, tooltip = "ADX(14) on the chart TF via ta.dmi(14,14), confirmed bars only. Below this the regime is FULL: every qualifying setup fires.")
+float adxAmber         = input.float(30, "ADX < this = EXTREME-ONLY", minval = 5, maxval = 80, group = GME, tooltip = "Between green and amber only EXTREME setups fire: stretch ≥ 2σ AND strict RSI AND level score ≥ trade floor + 2. At/above amber: NO mean reversion — the tape is trending.")
+float stretchSigmaMin  = input.float(1.5, "Stretch: min σ from VWAP", minval = 0.5, maxval = 4, step = 0.1, group = GME, tooltip = "Distance from session VWAP in the script's own session σ.")
+float stretchRangeMult = input.float(0.35, "Stretch: min range multiple", minval = 0.05, maxval = 2, step = 0.05, group = GME, tooltip = "× ATR(14) of the chart TF. Stretch passes when EITHER the σ-distance or this range distance is met (σ can be small early in a session).")
+int   rsiLen           = input.int(7, "RSI length", minval = 2, maxval = 30, group = GME)
+float rsiLong          = input.float(30, "RSI ≤ → long trigger", minval = 5, maxval = 50, group = GME)
+float rsiShort         = input.float(70, "RSI ≥ → short trigger", minval = 50, maxval = 95, group = GME)
+float rsiLongStrict    = input.float(25, "RSI ≤ → long (EXTREME-ONLY)", minval = 2, maxval = 50, group = GME)
+float rsiShortStrict   = input.float(75, "RSI ≥ → short (EXTREME-ONLY)", minval = 50, maxval = 98, group = GME, tooltip = "The trigger is a 2-bar window: this confirmed bar OR the prior confirmed bar at the threshold — the rejection candle is often the bar AFTER the RSI extreme.")
+float inWick           = input.float(0.55, "Rejection: close position ≥ (0.5–1)", minval = 0.5, maxval = 1, step = 0.05, group = GME, tooltip = "Long: close must sit in the top fraction of the bar range AND back on the VWAP side of the level. Short mirrored. This is the pin/engulf/strong-close proxy.")
+float inMrTol          = input.float(0.0, "Touch tolerance pts (0 = auto: 2× cluster width)", minval = 0, group = GME)
+// EXTREME-ONLY constants (documented, not inputs — the spec's fixed cuts)
+const float EXT_SIGMA = 2.0
+const float EXT_BUMP  = 2.0
 
-bool  enBRT     = input.bool(true, "Enable BRT play (break-retest)", group = GB, tooltip = "ON since 2.8 — broken level retested from the other side and held. Fires through the same dynamic construction and alerts as MR/IB. Trend-day continuation entries AT structure.")
-float inBrtEsc  = input.float(0.0, "Break margin pts (0 = auto: cluster width)", minval = 0, group = GB)
-int   inBrtWatch = input.int(20, "Retest watch window (bars)", minval = 2, maxval = 100, group = GB)
-int   brtMinGap  = input.int(3, "Retest: min bars after break", minval = 1, maxval = 20, group = GB, tooltip = "The retest cannot fire until this many bars after the break is ACCEPTED — separation is what makes it a retest instead of the same chop that faked the break.")
-
-bool  enAPP        = input.bool(true, "APP advisory (ride toward a wall)", group = GA, tooltip = "ADVISORY since 2.9 — dim label when a with-move ride into a powerful level sets up. No ticket, no alert, no count: a chase has no structure behind the entry, so it gets a read, not numbers. The reaction AT the level is the next decision (usually an MR or BRT).")
-int   inAppRank    = input.int(8, "Min rank of destination level", minval = 4, maxval = 30, group = GA)
-float inAppNear    = input.float(1.0, "Window near edge (× target)", minval = 0.5, step = 0.1, group = GA, tooltip = "Level must be at least this many target-distances away, so the fixed target lands in FRONT of the level.")
-float inAppFar     = input.float(1.5, "Window far edge (× target)", minval = 0.6, step = 0.1, group = GA)
-float inAppPos     = input.float(0.55, "With-move close position ≥", minval = 0.5, maxval = 1, step = 0.05, group = GA)
-int   inAppNoTouch = input.int(10, "Level untouched for (bars)", minval = 2, maxval = 100, group = GA, tooltip = "No wick within tolerance of the level in this lookback — do not chase into a level that just rejected.")
-bool  inAppDyn     = input.bool(true, "Include dynamic levels (VWAP · day H/L · dPOC · ±2σ · ON)", group = GA)
-
-int  inMaxSig = input.int(3, "Max signals per day (3-trade rule)", minval = 1, maxval = 10, group = GT)
-bool inHardCap = input.bool(false, "Hard-stop signals at max", group = GT, tooltip = "ON = indicator stops firing after max (plan: 'indicator stops signaling after 3 fires'). OFF = counter keeps counting, signals keep coming — display-only discipline.")
-bool inRthOnly = input.bool(false, "Signals only in NY RTH", group = GT, tooltip = "OFF = signals also fire in Asia and London.")
-bool inSessOnly = input.bool(true, "Signals only during sessions (pause 16:00-18:00 ET)", group = GT, tooltip = "Asia, London and NY each start and stop the engine at their open and close. The settlement gap between the NY close and the Asia open fires nothing.")
-int  inCd     = input.int(5, "Cooldown bars between signals", minval = 0, group = GT)
-bool useLunch = input.bool(false, "Lunch blackout", group = GT)
-string lunchSess = input.session("1130-1330", "Lunch window (ET)", group = GT)
-bool showPlan = input.bool(true, "Draw entry / stop / T1 on signal (auto-ends on TP/SL hit)", group = GT)
+int  inMaxSig   = input.int(3, "Max signals per day (3-trade rule)", minval = 1, maxval = 10, group = GT)
+bool inHardCap  = input.bool(false, "Hard-stop signals at max", group = GT)
+bool inRthOnly  = input.bool(false, "Signals only in NY RTH", group = GT)
+bool inSessOnly = input.bool(true, "Signals only during sessions (pause 16:00-18:00 ET)", group = GT)
+int  inCd       = input.int(5, "Cooldown bars between signals", minval = 0, group = GT)
+bool showPlan   = input.bool(true, "Draw entry / stop / T1 on signal (auto-ends on TP/SL hit)", group = GT)
 string inSigSize = input.string("Normal", "Signal label size", options = ["Small", "Normal", "Large"], group = GT)
-string primeSess = input.session("0800-1030", "Prime hours (ET)", group = GT, tooltip = "Dashboard CLOCK shows PRIME here. Default = the window that printed in the tournament ledger.")
-string coldSess  = input.session("0000-0100,0700-0800,1100-1200,1500-1600", "Cold hours (ET)", group = GT, tooltip = "Dashboard CLOCK shows COLD here and alerts carry a COLD HOUR tag. Defaults = the ledger's proven bleed windows. Display only — nothing is blocked.")
 
-bool  enImb      = input.bool(true, "Draw imbalance zones", group = GZ, tooltip = "Footprint-style stacked-imbalance PROXY from the lower-TF volume feed. Pine cannot read the chart's own footprint boxes — this recomputes the same idea: bars where one side did ≥ the ratio share of real volume leave a zone (bar body) that extends right until price closes through its far side.")
-float inImbRatio = input.float(0.8, "One-sided volume share ≥", minval = 0.55, maxval = 0.95, step = 0.05, group = GZ)
-float inImbVolK  = input.float(1.2, "Bar volume ≥ × 20-bar avg", minval = 0.0, step = 0.1, group = GZ)
-int   inImbMax   = input.int(4, "Max live zones per side", minval = 1, maxval = 12, group = GZ)
-int   inImbTouches = input.int(2, "Zone retires after N touches", minval = 1, maxval = 6, group = GZ, tooltip = "Each traversal consumes the resting orders that made the zone. First touch dims it (that touch WAS the trade), N touches removes it. Close-through the far side always kills instantly.")
-int   inImbBonus = input.int(2, "Cluster rank bonus inside a zone", minval = 0, maxval = 5, group = GZ, tooltip = "A ranked cluster sitting inside a live zone scores this much higher (label shows ◆). Level + resting imbalance = confluence.")
-
-// ── DAY TYPE ── all advisory at defaults; ENFORCE is opt-in
-bool   dtOn        = input.bool(true, "Show DAY TYPE row", group = GY)
-int    dtTrendThresh = input.int(5, "Trend score threshold |T| ≥", minval = 3, maxval = 9, group = GY)
-int    dtBalThresh = input.int(2, "Balance score threshold |T| ≤", minval = 0, maxval = 4, group = GY)
-int    dtHysteresis = input.int(2, "Evaluations to confirm a state change", minval = 1, maxval = 5, group = GY)
-int    dtOneTfStreak = input.int(4, "One-timeframing: consecutive 15m bars", minval = 2, maxval = 10, group = GY)
-float  dtRangeNY   = input.float(0.60, "Range gate × ADR(10) · NY", minval = 0.1, step = 0.05, group = GY)
-float  dtRangeLDN  = input.float(0.45, "Range gate × ADR(10) · LDN", minval = 0.1, step = 0.05, group = GY)
-float  dtRangeAS   = input.float(0.30, "Range gate × ADR(10) · ASIA", minval = 0.1, step = 0.05, group = GY)
-string dtGateMode  = input.string("OFF", "Play matrix mode", options = ["OFF", "ADVISORY", "ENFORCE"], group = GY, tooltip = "OFF (default) = nothing changes, row is information only. ADVISORY = benched signals still print, dimmed, tagged BENCH. ENFORCE = benched markers suppressed; the ledger feed still fires a BENCHED event so offered counts survive. Matrix: strong trend benches counter-trend reversals and favors break-retest/APP with the move; balance favors reversals and benches break-retest; TRANSITION benches nothing.")
-bool   dtTrendMrException = input.bool(true, "Trend day: allow with-trend reversal at rank ≥ 8 with react ≥ 70", group = GY)
-bool   dtTint      = input.bool(false, "Faint background tint by day type", group = GY)
-
-// ── APPROACH ── execution mode only, display only
-bool  apOn       = input.bool(true, "Show APPR read", group = GAPR)
-int   apWindow   = input.int(10, "Approach window (confirmed bars)", minval = 5, maxval = 40, group = GAPR)
-float apMaxDist  = input.float(1.5, "Active within (× target) of the cluster", minval = 0.5, step = 0.1, group = GAPR)
-float apEffMin   = input.float(0.55, "DRIVE: path efficiency ≥", minval = 0.3, maxval = 0.9, step = 0.05, group = GAPR, tooltip = "Net move ÷ total bar ranges over the window. High = directional travel, low = rotation.")
-float apSpeedMin = input.float(0.35, "DRIVE: speed ≥ (× ATR14 per bar)", minval = 0.1, step = 0.05, group = GAPR)
-float apPullMax  = input.float(40, "DRIVE: max pullback % of net move ≤", minval = 10, maxval = 80, step = 5, group = GAPR)
-float apSpeedDrift = input.float(0.12, "DRIFT: speed ≤", minval = 0.02, step = 0.02, group = GAPR)
-float apAlignLo  = input.float(35, "DRIFT: delta alignment between % …", minval = 0, maxval = 50, step = 5, group = GAPR)
-float apAlignHi  = input.float(65, "… and %", minval = 50, maxval = 100, step = 5, group = GAPR)
-bool  apReplaceNearest = input.bool(false, "Replace NEAREST cell while active (else own row)", group = GAPR)
-bool  apChartLabel = input.bool(true, "Label the target cluster when approach activates", group = GAPR)
-bool  apLabelDriveOnly = input.bool(true, "Chart-label DRIVE arrivals only", group = GAPR, tooltip = "DRIVE (freight train into the level) is the arrival that changes behavior — GRIND/DRIFT stay off the chart (HUD/feed keep them). Turn off to label every approach like 2.6.")
-
-// ── TOUCH REACT ── same evidence, same score, every touch. Approximation:
-// Pine cannot read true bid/ask order flow — volume splits stand in for it.
-bool  stOn       = input.bool(true, "Score ranked-cluster reactions (REACT 0-100)", group = GSTP)
-int   stW1       = input.int(30, "Weight · delta flip vs approach", minval = 0, maxval = 100, group = GSTP, tooltip = "Touch bar's delta opposing the arrival direction, scaled by its size vs the approach window's average delta. APPROXIMATION of footprint order flow from lower-TF up/down volume — Pine cannot see true bid/ask.")
-int   stW2       = input.int(25, "Weight · volume at the extreme third", minval = 0, maxval = 100, group = GSTP, tooltip = "Share of the touch bar's lower-TF volume sitting in the range third nearest the level — bottom-heavy at support · top-heavy at resistance, computed. Same approximation note applies.")
-int   stW3       = input.int(25, "Weight · rejection structure on the close", minval = 0, maxval = 100, group = GSTP)
-int   stW4       = input.int(20, "Weight · effort/result divergence", minval = 0, maxval = 100, group = GSTP)
-float stBotShare = input.float(45, "Extreme-third share for full weight %", minval = 30, maxval = 70, step = 5, group = GSTP)
-int   stampRearm = input.int(20, "Re-arm after (bars) or 2× cluster width away", minval = 5, maxval = 100, group = GSTP)
-bool  stampGateMR = input.bool(false, "Require a react score for reversal signals", group = GSTP, tooltip = "OFF (default) = signals untouched. ON = the reversal play prints only when the touch bar (or the bar before) stamped at or above the minimum at that cluster.")
-int   stampMinMR = input.int(60, "Minimum react score when gating", minval = 0, maxval = 100, group = GSTP)
-bool  stampDriveStrict = input.bool(false, "DRIVE arrival: raise the required react score by 10", group = GSTP)
-int   inReactShowMin = input.int(75, "Chart-label reactions scoring ≥ (0 = all)", minval = 0, maxval = 100, group = GSTP, tooltip = "REACT labels print only at/above this score — the chart shows defended touches, not every 0% pass-through. Scores below it still compute and feed the stats, gates and ledger feed.")
-
-// ── LEDGER FEED ── pipe-delimited alert() events the journal ingests
-bool feedAlerts  = input.bool(false, "Feed events to alerts", group = GLF, tooltip = "One-line pipe-delimited events on confirmed bars: TOUCH, REACT, DAYTYPE, APPR, BENCHED, NOTRADE. Rides the same 'Any alert() function call' alert. Default OFF since 2.6 — the only default alerts are BUY MR / SELL MR. Flip ON to feed Skuld's Ledger.")
-bool feedTouch   = input.bool(true, "· TOUCH events", group = GLF)
-bool feedStamp   = input.bool(true, "· REACT events", group = GLF)
-bool feedDayType = input.bool(true, "· DAYTYPE changes", group = GLF)
-bool feedAppr    = input.bool(true, "· APPR changes", group = GLF)
-bool feedBench   = input.bool(true, "· BENCHED events", group = GLF)
-
-bool showDash = input.bool(true, "Status panel", group = GD)
-string inDashPos = input.string("Top right", "Panel position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = GD)
-bool showDebugHud = input.bool(false, "Debug HUD (old system rows)", group = GD, tooltip = "The pre-2.6 panel: MODE/TUNE/SESSION/DAY TYPE/IB/NEAREST/sPOC/IMB/APPR/REACT/CLOCK/SIGNALS/FILTER + REGIME. Diagnostics only — the default HUD is trade-entry info.")
-int  inShowK = input.int(3, "Clusters drawn per side (execution)", minval = 1, maxval = 5, group = GD, tooltip = "EXECUTION mode draws only the nearest K qualifying clusters above and K below price (EffScore ≥ the regime's display floor). STRUCTURE mode keeps the full map.")
-bool showImbBoxes = input.bool(false, "Show imbalance-mimic boxes", group = GD, tooltip = "The footprint-proxy zone boxes. Default OFF — real footprint imbalances live on a separate chart; the zone ENGINE (rank bonus ◆) keeps running either way.")
-
-// ── EFFECTIVE SCORE ── reaction memory per atomic level, per direction
-float inReactAlpha = input.float(0.4, "Hold-rate EWMA alpha", minval = 0.05, maxval = 1.0, step = 0.05, group = GES, tooltip = "Weight of the newest HOLD/BREAK outcome in the per-level, per-direction hold rate. reactionMult = clamp(0.5 + holdRate, 0.5, 1.5); an untested direction scores exactly 1.0.")
-int   inReactWin   = input.int(3, "Reaction window (bars after touch)", minval = 1, maxval = 10, group = GES, tooltip = "Bars after a touch to classify HOLD or BREAK. Neither inside the window = neutral: the touch still counts for freshness, the hold rate does not move.")
+float inReactAlpha = input.float(0.4, "Hold-rate EWMA alpha", minval = 0.05, maxval = 1.0, step = 0.05, group = GES)
+int   inReactWin   = input.int(3, "Reaction window (bars after touch)", minval = 1, maxval = 10, group = GES)
 float inHoldTravel = input.float(0.10, "HOLD: travel ≥ × dATR from the edge", minval = 0.01, step = 0.01, group = GES)
 float inBrkTravel  = input.float(0.10, "BREAK: travel beyond far edge ≥ × dATR", minval = 0.01, step = 0.01, group = GES)
-float inFreshDecay = input.float(0.85, "Freshness decay per touch today", minval = 0.5, maxval = 1.0, step = 0.01, group = GES, tooltip = "effScore component = baseRank × reactionMult × decay^touchesToday. A naked level = 1.0. A low-rank level broken 3+ times decays off the chart — the fix for levels that get run through over and over.")
+int   inAcc        = input.int(2, "BREAK: acceptance closes beyond far edge", minval = 1, maxval = 5, group = GES)
+float inFreshDecay = input.float(0.85, "Freshness decay per touch today", minval = 0.5, maxval = 1.0, step = 0.01, group = GES)
 int   inStatCap    = input.int(2000, "Stat map size cap (prune above)", minval = 200, maxval = 20000, group = GES)
 
-// ── REGIME ── ATR percentile + VIX bump → tier → widths/floors/targets
-bool  useVix    = input.bool(true, "VIX bump (TVC:VIX daily close)", group = GRG, tooltip = "Prior day's VIX close. ≥ tier-1 threshold bumps the regime one tier, ≥ tier-2 two (capped at EXTREME). na = skipped.")
+bool  useVix    = input.bool(true, "VIX bump (TVC:VIX daily close)", group = GRG)
 float inVix1    = input.float(20, "VIX ≥ → +1 tier", group = GRG)
 float inVix2    = input.float(30, "VIX ≥ → +2 tiers", group = GRG)
 float inPctLow  = input.float(25, "ATR percentile: LOW below", minval = 1, maxval = 99, group = GRG)
@@ -447,93 +176,75 @@ float sBufNorm = input.float(0.020, "Stop buffer ×dATR · NORM", step = 0.005, 
 float sBufHigh = input.float(0.025, "Stop buffer ×dATR · HIGH", step = 0.005, group = GRG)
 float sBufExt  = input.float(0.030, "Stop buffer ×dATR · EXTREME", step = 0.005, group = GRG)
 
-// ── TRADE CONSTRUCTION ── 100% resting-limit workflow, all prices at signal
-float inEntryOff = input.float(0.25, "Entry offset into zone (× cluster width)", minval = 0.0, maxval = 1.0, step = 0.05, group = GTC, tooltip = "Entry = entry-cluster edge on the trade side, offset INTO the zone — a resting limit that fills on the retest after MR confirms.")
-float inTpStand  = input.float(0.10, "TP1 standoff (× cluster width, min 1 tick)", minval = 0.0, step = 0.05, group = GTC, tooltip = "TP1 lands this far IN FRONT of the first opposing qualifying cluster — never through it. See money, take money.")
-float inMinR     = input.float(0.7, "Min R (tpDist ≥ minR × stopDist)", minval = 0.1, step = 0.05, group = GTC)
-int   inValidBars = input.int(10, "Signal valid (bars)", minval = 1, maxval = 50, group = GTC, tooltip = "After this many bars the emitted prices are stale; a new signal supersedes.")
-int   inTpMaxT   = input.int(100, "TP1 max distance (ticks)", minval = 10, maxval = 400, group = GTC, tooltip = "The believability cap: a target level farther than this is not a real trade signal. The level must sit inside this range — the target is never truncated to a mid-air price.")
+float inEntryOff  = input.float(0.25, "Entry offset into zone (× cluster width)", minval = 0.0, maxval = 1.0, step = 0.05, group = GTC, tooltip = "Entry = entry-level edge on the trade side, offset INTO the zone — a resting limit that fills on the retest after the rejection confirms.")
+float inTpStand   = input.float(0.10, "T1 standoff (× cluster width, min 1 tick)", minval = 0.0, step = 0.05, group = GTC, tooltip = "When a working level sits between entry and VWAP, T1 lands this far IN FRONT of it — never through it. T2 = VWAP then.")
+float inMinR      = input.float(0.7, "Min R (tpDist ≥ minR × stopDist)", minval = 0.1, step = 0.05, group = GTC)
+int   inValidBars = input.int(6, "Signal valid (bars)", minval = 1, maxval = 50, group = GTC, tooltip = "BAR-based: 6 bars on the 15m chart of record = 90 minutes. After this the emitted prices are stale; a new signal supersedes.")
+int   inTpMaxT    = input.int(100, "Target max distance (ticks)", minval = 10, maxval = 400, group = GTC, tooltip = "The believability cap: VWAP farther than this from the entry is not a real mean-reversion signal — no trade, never a truncated mid-air target.")
 
-// ── SIGNAL GATES ── don't fight a freight train into the level
 int   inApprBars = input.int(5, "Initiative: velocity window (bars)", minval = 2, maxval = 20, group = GSG)
 float inVMax     = input.float(0.03, "Initiative: max velocity (× dATR per bar)", minval = 0.005, step = 0.005, group = GSG, tooltip = "Approach velocity above this = initiative pressure — stand down, no reversal.")
 int   inCMax     = input.int(6, "Initiative: max consecutive closes into level", minval = 2, maxval = 20, group = GSG)
 bool  useLtfDelta = input.bool(true, "Delta standdown (lower-TF up/down volume)", group = GSG, tooltip = "Scripted stand-in for the manual footprint read — a FILTER, not a trigger. One-sided flow into the level with the approach = absorption absent = no reversal.")
 float inDMax     = input.float(0.6, "Delta standdown: normalized delta ≥", minval = 0.1, maxval = 1.0, step = 0.05, group = GSG)
 
-color colS5   = input.color(#ffd54f, "★★★★★ cluster", group = GC)
-color colS4   = input.color(#ff9800, "★★★★ cluster", group = GC)
-color colS3   = input.color(#2962ff, "★★★ cluster", group = GC)
-color colS2   = input.color(#787b86, "★★ cluster", group = GC)
-color colS1   = input.color(#4c5158, "★ cluster", group = GC)
-color colVpOut = input.color(#3a3e47, "VP rows outside VA", group = GC)
-color colVpVa  = input.color(#2962ff, "VP rows inside VA", group = GC)
-color colVpPoc = input.color(#ff9800, "VP POC row / dev POC", group = GC)
-int   inVpTr   = input.int(80, "VP transparency", minval = 0, maxval = 95, group = GC)
-color colDevVa = input.color(#00bcd4, "Dev VAH/VAL", group = GC)
-color colVwap = input.color(#00bcd4, "VWAP", group = GC)
-color colBand = input.color(#9598a1, "σ bands", group = GC)
-color colOn   = input.color(#26a69a, "ONH/ONL", group = GC)
-color colUp   = input.color(#00FF00, "Long signals / T1", group = GC)
-color colDn   = input.color(#673ab7, "Short signals", group = GC)
-color colStop = input.color(#ef5350, "Stop line / loss", group = GC)
-color colImbB = input.color(#00FF00, "Buy imbalance zone", group = GC)
-color colImbS = input.color(#673ab7, "Sell imbalance zone", group = GC)
-color colText = input.color(#d1d4dc, "Labels / plan text", group = GC)
-string inSty  = input.string("Solid", "Cluster line style", options = ["Solid", "Dashed", "Dotted"], group = GC)
-int inWidW = input.int(3, "Line width · weekly-scope cluster", minval = 1, maxval = 5, group = GC)
-int inWidD = input.int(2, "Line width · daily-scope cluster", minval = 1, maxval = 5, group = GC)
-int inWidS = input.int(1, "Line width · session-scope cluster", minval = 1, maxval = 5, group = GC)
+float riskPct  = input.float(0.5, "Risk per trade (%)", minval = 0.25, maxval = 0.75, step = 0.05, group = GRK)
+float acctSize = input.float(50000, "Account size ($)", minval = 100, group = GRK, tooltip = "HUD-only advisory sizing: contracts = floor(risk$ ÷ (stop ticks × tick value)). CFD/forex (pointvalue 1) shows ticks only. Never an order.")
+
+bool feedNoTrade = input.bool(false, "NOTRADE events to alerts", group = GLF, tooltip = "Pipe-delimited EVT=NOTRADE on room-gate / believability kills. Rides the same 'Any alert() function call' alert. Default OFF — the only default alerts are BUY MR / SELL MR.")
+
+bool showDash = input.bool(true, "Status panel", group = GD)
+string inDashPos = input.string("Top right", "Panel position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = GD)
+bool showDebugHud = input.bool(false, "Debug HUD (REGIME · ADX · STRETCH · GATES)", group = GD)
+int  inShowK = input.int(3, "Levels drawn per side (execution)", minval = 1, maxval = 5, group = GD, tooltip = "EXECUTION mode draws only the nearest K qualifying levels above and K below price (EffScore ≥ the regime's display floor). STRUCTURE mode keeps the full map.")
+
+color colS5     = input.color(#ffd54f, "★★★★★ level", group = GC)
+color colS4     = input.color(#ff9800, "★★★★ level", group = GC)
+color colS3     = input.color(#2962ff, "★★★ level", group = GC)
+color colS2     = input.color(#787b86, "★★ level", group = GC)
+color colS1     = input.color(#4c5158, "★ level", group = GC)
+color colDevPoc = input.color(#ff9800, "Developing POC lines", group = GC)
+color colVwap   = input.color(#00bcd4, "VWAP", group = GC)
+color colBand   = input.color(#9598a1, "σ bands", group = GC)
+color colUp     = input.color(#00FF00, "Long signals / T1", group = GC)
+color colDn     = input.color(#673ab7, "Short signals", group = GC)
+color colStop   = input.color(#ef5350, "Stop line / loss", group = GC)
+color colText   = input.color(#d1d4dc, "Labels / plan text", group = GC)
+string inSty    = input.string("Solid", "Level line style", options = ["Solid", "Dashed", "Dotted"], group = GC)
+int inWidW = input.int(3, "Line width · weekly-scope level", minval = 1, maxval = 5, group = GC)
+int inWidD = input.int(2, "Line width · daily-scope level", minval = 1, maxval = 5, group = GC)
+int inWidS = input.int(1, "Line width · session-scope level", minval = 1, maxval = 5, group = GC)
 
 // ── DERIVED ────────────────────────────────────────────────────────────────
 int   tfSec   = timeframe.in_seconds(timeframe.period)
 int   barMs   = tfSec * 1000
 bool  htfMode = tfSec >= timeframe.in_seconds(inModeTf)
-int   tgtT    = inTgtT > 0 ? inTgtT : isES ? 8 : 32
-int   stopT   = inStopT > 0 ? inStopT : isES ? 12 : 48
-float tgtPts  = tgtT * syminfo.mintick
-float stopPts = stopT * syminfo.mintick
 float fineBin = inBin > 0 ? inBin : isES ? 0.25 : 1.0
-// Cluster width is REGIME-DRIVEN since 2.6: tier × dATR, recomputed only at
-// session boundaries or on tier change (identity churn is the enemy). The
-// var updates inside the confirmed block; until the first update (or with a
-// manual override) the old 25%-of-target seed stands in. Derived tolerances
-// read the var — one bar of lag at a width change, by design.
-float clustWSeed = 0.25 * tgtPts
-var float clustW = na
-float clustWv = inClW > 0 ? inClW : nz(clustW, clustWSeed)
-float mrTol   = inMrTol > 0 ? inMrTol : 2 * clustWv
-float brtEsc  = inBrtEsc > 0 ? inBrtEsc : clustWv
 string ltfStr = inLtf != "" ? inLtf : tfSec >= 3600 ? "5" : tfSec >= 60 ? "1" : "1S"
 string prSty  = inSty == "Dashed" ? line.style_dashed : inSty == "Dotted" ? line.style_dotted : line.style_solid
 string sigSz  = inSigSize == "Large" ? size.large : inSigSize == "Small" ? size.small : size.normal
 
-float atr14 = ta.atr(14)
-
 // global series used inside functions — must exist before function defs
+float atr14  = ta.atr(14)
 float cPrev  = close[1]
 float cPrev2 = close[2]
 float loW    = math.min(low, low[1])
 float hiW    = math.max(high, high[1])
 float barRng = high - low
 float cPos   = barRng > 0 ? (close - low) / barRng : 0.5
-float volSma = ta.sma(volume, 20)
-float relVol = volSma > 0 ? nz(volume) / volSma : 1.0
-float appHiN = ta.highest(high, inAppNoTouch)
-float appLoN = ta.lowest(low, inAppNoTouch)
+// the edge's oscillators — global scope, read on confirmed bars only
+[diP, diM, adxV] = ta.dmi(14, 14)
+float rsiV = ta.rsi(close, rsiLen)
 
 // sessions
 bool inRTH   = not na(time(timeframe.period, rthSess, TZ))
 bool inON    = not na(time(timeframe.period, onSess, TZ))
 bool inA     = not na(time(timeframe.period, sAsia, TZ))
 bool inL     = not na(time(timeframe.period, sLdn, TZ))
-bool inLunch = not na(time(timeframe.period, lunchSess, TZ))
-bool inPrime = not na(time(timeframe.period, primeSess, TZ))
-bool inCold  = not na(time(timeframe.period, coldSess, TZ))
 bool newRTH  = inRTH and not inRTH[1]
 // one session string for the engines AND the dashboard
 string sessNow = inRTH ? "NY" : inL ? "LDN" : inA ? "ASIA" : "OFF"
-// all-sessions machinery: every session is first-class (v2.5)
+// all-sessions machinery: every session is first-class
 bool inAnySess = inRTH or inL or inA
 bool newSess = inAnySess and sessNow != sessNow[1]
 var int sessStartT = na
@@ -544,7 +255,24 @@ bool newTradeDay = newSess and sessNow == "ASIA"
 // per-session initial balance window: first N minutes of the ACTIVE session
 bool inIBw = inAnySess and not na(sessStartT) and time - sessStartT < inIbMin * 60 * 1000
 
-// ── TYPES & FUNCTIONS ──────────────────────────────────────────────────────
+// ── REQUESTS ── budget: THREE calls (unchanged since 2.6) ──────────────────
+// Lower-TF close/volume feed the profiles and the up/down volume split; two
+// daily pulls feed the regime engine. Daily pattern is value[1] +
+// lookahead_on = yesterday's COMPLETED value — constant all day, identical
+// on history and realtime.
+[ltfC, ltfV] = request.security_lower_tf(syminfo.tickerid, ltfStr, [close, volume])
+[dAtr, atrPctD] = request.security(syminfo.tickerid, "D", [ta.atr(14)[1], ta.percentrank(ta.atr(14), 60)[1]], lookahead = barmerge.lookahead_on)
+float vixD = request.security("TVC:VIX", "D", close[1], lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+
+// cluster width: regime tier × dATR, recomputed only at session boundaries
+// or tier change. 3.0: the legacy tick seed is gone — the fallback until the
+// daily feed is up is 0.02×dATR, then chart ATR(14), then a tick floor.
+float clustWSeed = not na(dAtr) ? 0.02 * dAtr : math.max(nz(atr14) * 2.0, 8 * syminfo.mintick)
+var float clustW = na
+float clustWv = inClW > 0 ? inClW : nz(clustW, clustWSeed)
+float mrTol = inMrTol > 0 ? inMrTol : 2 * clustWv
+
+// ── TYPES & BASE FUNCTIONS ─────────────────────────────────────────────────
 type Prof
     array<float> vol
     int   base
@@ -560,28 +288,22 @@ type Lvl
 // ── EFFECTIVE SCORE types ──────────────────────────────────────────────────
 // Per-level reaction memory lives in maps keyed by STABLE IDENTITY, so a
 // migrating developing level (or tomorrow's pdPOC at a new price) carries
-// its behavioral history. Key scheme (built ONLY by f_dirKey/base names —
+// its behavioral history. Key scheme (built ONLY by f_lvlKey/base names —
 // never inline, key drift orphans stats):
 //   named levels : the name verbatim ("pdPOC", "NY H", "VWAP", "sPOC", …)
 //   HVN/LVN      : name + "_" + round(price / clusterWidth)  (price bucket)
 //   direction    : "|B" fromBelow · "|A" fromAbove appended for DirStat
-// DirStat (per key+direction): EWMA hold rate + the H/B record.
-// FreshStat (per key, direction-agnostic): touches today for freshness
-// decay, epoch-tagged so scope resets are O(1) (session-scope stats reset
-// at session change, day-scope at the trade-day roll, week-scope weekly).
 type DirStat
     float ewma  = na   // na = untested → reactionMult exactly 1.0
     int   holdN = 0
     int   brkN  = 0
-    int   epoch = -1   // scope epoch — stale = the level's period rolled,
-                       // stats read as untested and reset on next write
+    int   epoch = -1   // scope epoch — stale = the level's period rolled
 
 type FreshStat
     int tchToday = 0
     int epoch    = -1
     int lastBar  = -1  // bar of the newest touch — its own evaluation bar
-                       // reads freshness WITHOUT it (touch N grades on N−1
-                       // prior touches, per the spec's decay arithmetic)
+                       // reads freshness WITHOUT it
 
 f_newProf() =>
     Prof.new(array.new<float>(), 0, na, na)
@@ -602,7 +324,7 @@ f_add(Prof p, float pr, float v) =>
     p.hi := na(p.hi) ? pr : math.max(p.hi, pr)
     p.lo := na(p.lo) ? pr : math.min(p.lo, pr)
 
-f_stretch(Prof p, float h, float l) =>
+f_stretchProf(Prof p, float h, float l) =>
     p.hi := na(p.hi) ? h : math.max(p.hi, h)
     p.lo := na(p.lo) ? l : math.min(p.lo, l)
 
@@ -732,26 +454,20 @@ f_gather(array<Lvl> src, array<float> gp, array<int> gr, array<int> gs, array<st
 
 // Stable stat key for one atomic level. Named levels key by name (concept
 // identity: "pdPOC" is one behavioral fact forever). HVN/LVN have no name —
-// they key by price bucket, quantized by the active cluster width; a node
-// migrating a full bucket starts fresh (accepted).
+// they key by price bucket, quantized by the active cluster width.
 f_lvlKey(string nm, float price, float w) =>
     str.endswith(nm, "HVN") or str.endswith(nm, "LVN") ? nm + "_" + str.tostring(math.round(price / math.max(w, syminfo.mintick))) : nm
 
 // merge levels within width w into clusters. rank = sum, price = rank-weighted.
-// 2.6: also emits per-cluster TIGHT zone (member-price span, min width w) and
-// the flattened member slice (key/rank/scope) the Effective Score engine
+// Also emits per-cluster TIGHT zone (member-price span, min width w) and the
+// flattened member slice (key/rank/scope) the Effective Score engine
 // attributes touches to. Stats are NOT touched here — clusters are a view,
 // the maps are the durable truth.
-f_clusters(array<Lvl> aW, array<Lvl> aD, array<Lvl> aA, array<Lvl> aL, array<Lvl> aN, bool useSess, float w, array<float> clP, array<float> clR, array<int> clS, array<string> clN, array<int> clSt, array<int> clEB, array<int> tTch, array<int> tStB, array<float> tStV, array<float> cLoT, array<float> cHiT, array<int> cMemA, array<int> cMemN, array<string> mKey, array<float> mRank, array<int> mScope) =>
+f_clusters(array<Lvl> aW, array<Lvl> aD, array<Lvl> aA, array<Lvl> aL, array<Lvl> aN, bool useSess, float w, array<float> clP, array<float> clR, array<int> clS, array<string> clN, array<float> cLoT, array<float> cHiT, array<int> cMemA, array<int> cMemN, array<string> mKey, array<float> mRank, array<int> mScope) =>
     clP.clear()
     clR.clear()
     clS.clear()
     clN.clear()
-    clSt.clear()
-    clEB.clear()
-    tTch.clear()
-    tStB.clear()
-    tStV.clear()
     cLoT.clear()
     cHiT.clear()
     cMemA.clear()
@@ -790,11 +506,6 @@ f_clusters(array<Lvl> aW, array<Lvl> aD, array<Lvl> aA, array<Lvl> aL, array<Lvl
                 clR.push(rSum)
                 clS.push(sMax)
                 clN.push(nAcc)
-                clSt.push(0)
-                clEB.push(0)
-                tTch.push(0)
-                tStB.push(-1)
-                tStV.push(float(na))
                 // tight zone: member span, widened symmetrically to ≥ w
                 float pad0 = math.max(0.0, (w - (mHi - mLo)) / 2)
                 cLoT.push(mLo - pad0)
@@ -825,11 +536,6 @@ f_clusters(array<Lvl> aW, array<Lvl> aD, array<Lvl> aA, array<Lvl> aL, array<Lvl
             clR.push(rSum)
             clS.push(sMax)
             clN.push(nAcc)
-            clSt.push(0)
-            clEB.push(0)
-            tTch.push(0)
-            tStB.push(-1)
-            tStV.push(float(na))
             float pad1 = math.max(0.0, (w - (mHi - mLo)) / 2)
             cLoT.push(mLo - pad1)
             cHiT.push(mHi + pad1)
@@ -837,22 +543,8 @@ f_clusters(array<Lvl> aW, array<Lvl> aD, array<Lvl> aA, array<Lvl> aL, array<Lvl
             cMemN.push(cnt)
     true
 
-// MR reaction test at one level. Returns 1 long, -1 short, 0 none.
-f_mrTest(float lvl) =>
-    int d = 0
-    if not na(lvl)
-        // touch may land on this bar OR the prior bar; rejection close is this bar
-        if (cPrev > lvl or cPrev2 > lvl) and loW <= lvl + mrTol and loW >= lvl - stopPts and close > lvl and cPos >= inWick
-            d := 1
-        else if (cPrev < lvl or cPrev2 < lvl) and hiW >= lvl - mrTol and hiW <= lvl + stopPts and close < lvl and cPos <= 1 - inWick
-            d := -1
-    d
-
 f_stars(float r) =>
     r >= 10 ? 5 : r >= 8 ? 4 : r >= 6 ? 3 : r >= 4 ? 2 : 1
-
-f_starTxt(int s) =>
-    s == 5 ? "★★★★★" : s == 4 ? "★★★★" : s == 3 ? "★★★" : s == 2 ? "★★" : "★"
 
 // Exact score display — the raw summed rank, uncapped. One math for every
 // level; stars remain only as color bands.
@@ -862,50 +554,7 @@ f_scoreTxt(float r) =>
 f_starCol(int s) =>
     s == 5 ? colS5 : s == 4 ? colS4 : s == 3 ? colS3 : s == 2 ? colS2 : colS1
 
-// developing profile → display rows for the histogram
-f_rows(Prof p, int rowsN) =>
-    array<float> rv = array.new<float>(rowsN, 0.0)
-    float lo = p.lo
-    float rowH = na
-    float tot = 0.0
-    int pocI = 0
-    int uI = 0
-    int dI = 0
-    int nb = array.size(p.vol)
-    if nb > 0 and not na(p.lo) and not na(p.hi) and p.hi > p.lo
-        rowH := (p.hi - p.lo) / rowsN
-        for i = 0 to nb - 1
-            float bv = array.get(p.vol, i)
-            if bv > 0
-                float pr = (p.base + i + 0.5) * fineBin
-                int ri = math.min(rowsN - 1, math.max(0, int(math.floor((pr - lo) / rowH))))
-                rv.set(ri, rv.get(ri) + bv)
-                tot += bv
-        if tot > 0
-            float mx = -1.0
-            for i = 0 to rowsN - 1
-                if rv.get(i) > mx
-                    mx := rv.get(i)
-                    pocI := i
-            float vaVol = rv.get(pocI)
-            uI := pocI + 1
-            dI := pocI - 1
-            while vaVol < tot * inVA / 100.0
-                float vu = uI <= rowsN - 1 ? rv.get(uI) : -1.0
-                float vd = dI >= 0 ? rv.get(dI) : -1.0
-                if vu < 0 and vd < 0
-                    break
-                if vu >= vd
-                    vaVol += vu
-                    uI += 1
-                else
-                    vaVol += vd
-                    dI -= 1
-    [rv, lo, rowH, tot, pocI, uI, dI]
-
-// Brand dashboard row: dark card, dim key, STATE-COLORED value text on a
-// whisper of the same color — matches the label aesthetic on the chart
-// instead of stock green/red cell fills.
+// Brand dashboard row: dark card, dim key, state-colored value text.
 f_row(table t, int r, string k, string v, color st) =>
     table.cell(t, 0, r, k, text_color = #787b86, text_size = size.tiny, bgcolor = color.new(#0d0d10, 8))
     table.cell(t, 1, r, v, text_color = st, text_size = size.tiny, bgcolor = color.new(st, 86))
@@ -921,19 +570,20 @@ var array<Lvl> priorW = array.new<Lvl>()
 var array<Lvl> priorA = array.new<Lvl>()
 var array<Lvl> priorL = array.new<Lvl>()
 var array<Lvl> priorN = array.new<Lvl>()
-// clusters (parallel arrays) + BRT state per cluster
-// state: 0 live · 1 broke up · 2 broke down · 3 done/dead
-var array<float>  clP  = array.new<float>()
-var array<float>  clR  = array.new<float>()
-var array<int>    clS  = array.new<int>()
-var array<string> clN  = array.new<string>()
-var array<int>    clSt = array.new<int>()
-var array<int>    clEB = array.new<int>()
-// BRT break-acceptance counter per cluster (2.9.2): signed consecutive
-// closes beyond the escape margin (+above / -below); reset on recluster.
-var array<int>    clAcc = array.new<int>()
+// clusters (parallel arrays)
+var array<float>  clP = array.new<float>()
+var array<float>  clR = array.new<float>()
+var array<int>    clS = array.new<int>()
+var array<string> clN = array.new<string>()
+var array<float>  clLoT = array.new<float>()
+var array<float>  clHiT = array.new<float>()
+var array<int>    clMemA = array.new<int>()
+var array<int>    clMemN = array.new<int>()
+var array<string> memKey = array.new<string>()
+var array<float>  memRank = array.new<float>()
+var array<int>    memScope = array.new<int>()
 var bool needCl = false
-// anchors for profile histogram + dev lines
+// anchors for the developing-level lines
 var int dT0 = na
 var int wT0 = na
 var int aT0 = na
@@ -942,25 +592,20 @@ var int nT0 = na
 // overnight extremes (live session extremes ride sessHi/sessLo)
 var float onHi = na
 var float onLo = na
-// VWAP
+// VWAP accumulators
 var float sPV = 0.0
+var float sV = 0.0
+var float sP2 = 0.0
 // session TWAP (time-weighted): plain mean of hlc3 since session open
 var float sTw = 0.0
 var int sTwN = 0
-var float sV = 0.0
-var float sP2 = 0.0
-// IB
+// IB — level pair only since 3.0
 var float ibHi = na
 var float ibLo = na
 var bool ibDone = false
-var int accUp = 0
-var int accDn = 0
-var int firedUp = 0
-var int firedDn = 0
 // discipline
 var int sigCnt = 0
 var int lastSigBar = -99999
-var array<float> appFired = array.new<float>()
 // developing levels (confirmed-close values — anti-repaint)
 var float devSPoc = na
 var float devSVah = na
@@ -979,25 +624,8 @@ var float planTp = na
 var float planEp = na
 var bool planFilled = false
 var bool planOn = false
-// imbalance zones (footprint proxy) — parallel arrays, newest last
-var array<box>   imbBx  = array.new<box>()
-var array<float> imbHi  = array.new<float>()
-var array<float> imbLo  = array.new<float>()
-var array<int>   imbDir = array.new<int>()
-var array<int>   imbTch = array.new<int>()   // touches since creation
-var array<int>   imbBorn = array.new<int>()  // creation bar time (skip self-touch)
 // last lower-TF close carried across chart bars for the up/down volume split
 var float lastLtf = na
-
-// ── EFFECTIVE SCORE · REGIME · POOL state (2.6) ────────────────────────────
-// cluster tight zones + flattened member slices (parallel to clP; f_clusters)
-var array<float>  clLoT = array.new<float>()
-var array<float>  clHiT = array.new<float>()
-var array<int>    clMemA = array.new<int>()
-var array<int>    clMemN = array.new<int>()
-var array<string> memKey = array.new<string>()
-var array<float>  memRank = array.new<float>()
-var array<int>    memScope = array.new<int>()
 // reaction memory — the durable truth clusters are only a view of
 var map<string, DirStat> dirStats = map.new<string, DirStat>()
 var map<string, FreshStat> freshStats = map.new<string, FreshStat>()
@@ -1022,8 +650,8 @@ var array<string> pdKeysA = array.new<string>()
 var int tier = 1              // 0 LOW · 1 NORM · 2 HIGH · 3 EXTREME
 var float atrPct = na
 // unified level pool: clusters first (pool idx == cluster idx), then dynamic
-// singletons (VWAP/±2σ/sesH·L/ON/IB/dev). Rebuilt every confirmed bar —
-// touch engine, MR engine, HUD and the execution render all read THIS.
+// singletons. Rebuilt every confirmed bar — touch engine, MR engine, HUD and
+// the execution render all read THIS.
 var array<float>  poolP = array.new<float>()
 var array<float>  poolLoT = array.new<float>()
 var array<float>  poolHiT = array.new<float>()
@@ -1037,74 +665,39 @@ var array<int>    pmScope = array.new<int>()
 // initiative trackers (vars → [k] history works)
 var int upStrk = 0
 var int dnStrk = 0
+var float barDelta = 0.0
 var float barVolUD = 0.0
+// session extremes (pool sesH/sesL)
+var string sessPrev = ""
+var float sessHi = na
+var float sessLo = na
 // live MR signal (HUD SIGNAL state + validity window)
 var int sigDir = 0
-var string sigPlay = "MR"     // which play owns the HUD block: MR or IB
 var float sigE = na
 var float sigS = na
 var float sigT = na
+var float sigT2 = na
 var float sigR = na
 var int sigBorn = na
 var string sigLvlTxt = ""
+var string sigTgtNm = ""
+// HUD gate tokens — confirmed-bar snapshots, display only
+var float adxDisp = na
+var int regDisp = -1          // 2 FULL · 1 EXTREME-ONLY · 0 NO MR · -1 unknown
+var float sigmaDisp = na
+var float rsiDisp = na
+var bool stretchDispOK = false
+var bool rsiDispOK = false
+var bool lvlDispOK = false
 
-// price inside a live zone? 1 buy zone · -1 sell zone · 0 none
-f_inZone(float px) =>
-    int z = 0
-    if enImb and imbLo.size() > 0
-        for i = 0 to imbLo.size() - 1
-            if px >= imbLo.get(i) and px <= imbHi.get(i)
-                z := imbDir.get(i)
-    z
-
-// drop zone i everywhere
-f_zoneKill(int i) =>
-    box.delete(imbBx.get(i))
-    imbBx.remove(i)
-    imbHi.remove(i)
-    imbLo.remove(i)
-    imbDir.remove(i)
-    imbTch.remove(i)
-    imbBorn.remove(i)
-    true
-
-// price of a named level inside a prior-period level array; na if absent
-f_lvlPrice(array<Lvl> a, string nm) =>
-    float p = na
-    for x in a
-        if x.name == nm
-            p := x.price
-    p
-
-// least-squares slope over an array of floats (x = 0..n-1); na if < 2 points
-f_slope(array<float> ys) =>
-    int n = ys.size()
-    float s = na
-    if n >= 2
-        float sx = 0.0
-        float sy = 0.0
-        float sxy = 0.0
-        float sxx = 0.0
-        for i = 0 to n - 1
-            float fx = i
-            float fy = ys.get(i)
-            sx += fx
-            sy += fy
-            sxy += fx * fy
-            sxx += fx * fx
-        float den = n * sxx - sx * sx
-        if den != 0
-            s := (n * sxy - sx * sy) / den
-    s
-
-// ── EFFECTIVE SCORE · REGIME · CONSTRUCTION functions (2.6) ────────────────
+// ── EFFECTIVE SCORE · REGIME · CONSTRUCTION functions ──────────────────────
 // epoch for a scope: 3 week · 2 day · else session
 f_epochFor(int scope) =>
     scope == 3 ? epWeek : scope == 2 ? epDay : epSess
 
 // effComponent of one atom for one arrival direction (1 = fromBelow).
 // untested direction reads exactly 1.0; na-guarded so a missing key can
-// never poison the sum (na × rank would silently kill the whole score).
+// never poison the sum.
 f_comp(string baseKey, int dirCode, float baseRank, int scope) =>
     int ep = f_epochFor(scope)
     DirStat ds = dirStats.get(baseKey + (dirCode == 1 ? "|B" : "|A"))
@@ -1138,11 +731,8 @@ f_touchMark(string baseKey, int scope) =>
     true
 
 // outcome resolution: EWMA update (seeded from neutral 0.5) + H/B record,
-// for every member of the touched zone, in the touch's direction. Items in
-// the csv are "key,scope" pairs — the scope stamps the epoch, so a stat
-// whose period rolled resets to fresh before the new outcome lands.
-// This is the ONLY writer of ewma — touch time never moves it (the touch's
-// own outcome does not exist yet; using it would be intra-bar future leak).
+// for every member of the touched zone, in the touch's direction. This is
+// the ONLY writer of ewma — touch time never moves it.
 f_resolveKeys(string keysCsv, int dirCode, float outcome) =>
     array<string> ks = str.split(keysCsv, ";")
     for kk in ks
@@ -1167,7 +757,7 @@ f_resolveKeys(string keysCsv, int dirCode, float outcome) =>
                 ds.brkN += 1
     true
 
-// regime tier parameter lookups (all inputs — §3 table)
+// regime tier parameter lookups (all inputs)
 f_tierW() =>
     tier == 0 ? wLow : tier == 1 ? wNorm : tier == 2 ? wHigh : wExt
 f_tierDisp() =>
@@ -1201,8 +791,8 @@ f_poolAdd(float px, string nm, float rk, int scope) =>
     true
 
 // EffScore of pool item i for arrival direction dirCode (1 = fromBelow):
-// Σ member effComponents + imbalance-zone confluence bonus (score points).
-// Invariant: an all-untested item's EffScore == its plain summed rank.
+// Σ member effComponents. Invariant: an all-untested item's EffScore == its
+// plain summed rank.
 f_poolScore(int i, int dirCode) =>
     float s = 0.0
     int a = poolMemA.get(i)
@@ -1210,108 +800,79 @@ f_poolScore(int i, int dirCode) =>
     if nM > 0
         for m = a to a + nM - 1
             s += f_comp(pmKey.get(m), dirCode, pmRank.get(m), pmScope.get(m))
-    s + (f_inZone(poolP.get(i)) != 0 ? inImbBonus : 0)
+    s
 
-// Dynamic trade construction (§4) — 100% resting-limit workflow. dir = trade
-// direction; short mirrors long by arithmetic, never by duplicated branches.
-// Direction table (sign bugs breed here — pin it):
-//   MR long : price arrived fromAbove (|A) · entry = UPPER tight edge offset
-//             down INTO the zone · stop below far edge · TP scan UP, each
-//             candidate scored fromBelow (|B)
-//   MR short: every term negated.
-// TP1 = front edge of the NEAREST opposing qualifying item minus standoff —
-// never through a working level. Nearest qualifying fails the room floor →
-// NO TRADE (never skip to the next). None within tpCap×dATR → open field.
-// Returns [entry, stop, tp1, r, roomOk].
-f_construct(int i, int dir, float dAtrP) =>
+// MR rejection test at pool item i — 2.9's f_mrTest on zone geometry. The
+// legacy fixed-tick pierce allowance is the regime stop buffer now: a wick
+// beyond where the structure stop would sit = the level failed, no MR.
+// Returns 1 long, -1 short, 0 none.
+f_mrTest3(int i) =>
+    int d = 0
+    float lvl = poolP.get(i)
+    float zLo = poolLoT.get(i)
+    float zHi = poolHiT.get(i)
+    float pierce = not na(dAtr) ? f_tierSBuf() * dAtr : mrTol
+    if (cPrev > lvl or cPrev2 > lvl) and loW <= math.max(zHi, lvl + mrTol) and loW >= zLo - pierce and close > lvl and cPos >= inWick
+        d := 1
+    else if (cPrev < lvl or cPrev2 < lvl) and hiW >= math.min(zLo, lvl - mrTol) and hiW <= zHi + pierce and close < lvl and cPos <= 1 - inWick
+        d := -1
+    d
+
+// Dynamic ticket (3.0) — 100% resting-limit workflow. dir = trade direction;
+// short mirrors long by arithmetic, never by duplicated branches.
+//   E  = entry-level tight edge on the trade side, offset INTO the zone
+//   S  = far edge − regime buffer AND beyond the touch bar's extreme:
+//        long stop = min(farEdge − buf, touchLow − 1 tick), short mirrored
+//   T1 = SESSION VWAP — the primary target. A qualifying pool level between
+//        entry and VWAP intercepts: T1 = its front edge − standoff (never
+//        through a working level, never skipped) and T2 = VWAP.
+//        VWAP farther than the believability cap (ticks) or the regime TP
+//        cap → NO TRADE (tp returns na).
+//   Room gate: tpDist ≥ max(minR × stopDist, tpFloor × dATR) or NO TRADE.
+// Returns [entry, stop, tp1, tp2, r, roomOk, targetName].
+f_construct3(int i, int dir, float dAtrP, float tchExt, float vwapPx) =>
     float wNow = math.max(clustWv, syminfo.mintick)
     float entry = dir == 1 ? poolHiT.get(i) - inEntryOff * wNow : poolLoT.get(i) + inEntryOff * wNow
-    float stop = dir == 1 ? poolLoT.get(i) - f_tierSBuf() * dAtrP : poolHiT.get(i) + f_tierSBuf() * dAtrP
+    float stopStr = dir == 1 ? poolLoT.get(i) - f_tierSBuf() * dAtrP : poolHiT.get(i) + f_tierSBuf() * dAtrP
+    float stopExt = dir == 1 ? tchExt - syminfo.mintick : tchExt + syminfo.mintick
+    float stop = dir == 1 ? math.min(stopStr, stopExt) : math.max(stopStr, stopExt)
     float stopD = (entry - stop) * dir
-    float qDist = na
-    float qFront = na
-    int nP = poolP.size()
-    if nP > 0
-        for q = 0 to nP - 1
-            if q != i
-                float front = dir == 1 ? poolLoT.get(q) : poolHiT.get(q)
-                float dd = (front - entry) * dir
-                if dd > 0 and (na(qDist) or dd < qDist)
-                    if f_poolScore(q, dir) >= f_tierTrd()
-                        qDist := dd
-                        qFront := front
-    // 2.9.3: T1 is a LEVEL or there is no trade. The open-field fallback
-    // (entry ± tpCap×dATR) is gone — a math price nobody defends is not a
-    // target. The level must also sit within the believable range (input,
-    // 100t default) AND the regime cap.
+    float vDist = na(vwapPx) ? float(na) : (vwapPx - entry) * dir
+    bool vwapOK = false
+    if not na(vDist)
+        vwapOK := vDist > 0 and vDist <= inTpMaxT * syminfo.mintick and vDist <= f_tierTpCap() * dAtrP
     float tp = na
-    if not na(qFront) and qDist <= f_tierTpCap() * dAtrP and qDist <= inTpMaxT * syminfo.mintick
-        tp := qFront - dir * math.max(syminfo.mintick, inTpStand * wNow)
-    float tpD = (tp - entry) * dir
-    bool ok = not na(tp) and stopD > 0 and tpD >= math.max(inMinR * stopD, f_tierTpFloor() * dAtrP)
-    [entry, stop, tp, na(tp) ? na : tpD / math.max(stopD, syminfo.mintick), ok]
-
-// ── DAY TYPE · APPROACH · STAMP state ──────────────────────────────────────
-// delta series shared by everything (assigned each confirmed bar)
-var float barDelta = 0.0
-var float cumSessDelta = 0.0
-// session tracking
-var string sessPrev = ""
-var float sessHi = na
-var float sessLo = na
-var float sessOpen = na
-var bool ibBrokeUp = false
-var bool ibBrokeDn = false
-// full-day range tracking for ADR(10) — no request needed
-var float dayHiT = na
-var float dayLoT = na
-var array<float> adrArr = array.new<float>()
-// 15m one-timeframing buckets tracked on-chart
-var float m15Hi = na
-var float m15Lo = na
-var float m15PrevHi = na
-var float m15PrevLo = na
-var int m15UpStreak = 0
-var int m15DnStreak = 0
-// evaluation ring buffers (cap 24 evaluations)
-var array<float> evalCum = array.new<float>()
-var array<float> evalDelta = array.new<float>()
-var float lastEvalCum = 0.0
-// day-type state machine
-var string dtState = "TRANSITION"
-var string dtCand = ""
-var int dtCandN = 0
-var int dtT = 0
-var bool dtGateOK = false
-// approach state
-var int apDir = 0
-var string apGrade = ""
-var float apLvlP = na
-var float apLvlR = 0.0
-var string apLvlN = ""
-var array<label> apLbs = array.new<label>()
-// stamp state (kept per cluster in parallel arrays cleared on recluster)
-var array<int> clTch = array.new<int>()     // touches today
-var array<int> clStB = array.new<int>()     // last stamp bar (-1 = armed)
-var array<float> clStV = array.new<float>() // last stamp score
-var float stLastScore = na
-var string stLastBand = ""
-var string stLastName = ""
-var int stLastBar = na
-var array<label> stLbs = array.new<label>()
-
-// Request budget: THREE calls. Lower-TF close/volume/hl2 feed the profiles,
-// the up/down volume split and the stamp bins; two daily pulls feed the
-// regime engine. Daily pattern is value[1] + lookahead_on = yesterday's
-// COMPLETED value — constant all day, identical on history and realtime
-// (lookahead_off would drift intrabar and flip regime tiers mid-session;
-// bare lookahead_on without [1] would leak tomorrow into history).
-[ltfC, ltfV, ltfH] = request.security_lower_tf(syminfo.tickerid, ltfStr, [close, volume, hl2])
-// ATR percentile is computed INSIDE the daily context (ta.percentrank over
-// the daily series), so a 1-minute chart still sees the full 60-day window —
-// an on-chart ring would starve on intraday history and jam the tier at NORM.
-[dAtr, atrPctD] = request.security(syminfo.tickerid, "D", [ta.atr(14)[1], ta.percentrank(ta.atr(14), 60)[1]], lookahead = barmerge.lookahead_on)
-float vixD = request.security("TVC:VIX", "D", close[1], lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+    float tp2 = na
+    string tgtNm = ""
+    if vwapOK
+        // nearest qualifying working level strictly between entry and VWAP
+        // (the VWAP pool singleton is the target itself — excluded)
+        float qDist = na
+        float qFront = na
+        int nP = poolP.size()
+        if nP > 0
+            for q = 0 to nP - 1
+                if q != i and poolName.get(q) != "VWAP"
+                    float front = dir == 1 ? poolLoT.get(q) : poolHiT.get(q)
+                    float dd = (front - entry) * dir
+                    if dd > 0 and dd < vDist and (na(qDist) or dd < qDist)
+                        if f_poolScore(q, dir) >= f_tierTrd()
+                            qDist := dd
+                            qFront := front
+                            tgtNm := poolName.get(q)
+        if not na(qFront)
+            tp := qFront - dir * math.max(syminfo.mintick, inTpStand * wNow)
+            tp2 := vwapPx
+        else
+            tp := vwapPx
+            tgtNm := "VWAP"
+    float rr = float(na)
+    bool ok = false
+    if not na(tp) and stopD > 0
+        float tpD = (tp - entry) * dir
+        rr := tpD / stopD
+        ok := tpD >= math.max(inMinR * stopD, f_tierTpFloor() * dAtrP)
+    [entry, stop, tp, tp2, rr, ok, tgtNm]
 
 // ── PER-BAR TRACKING (live) ────────────────────────────────────────────────
 if timeframe.change("D")
@@ -1335,7 +896,6 @@ if inON
 // trading-day reset — Asia open (18:00 ET) starts the day
 if newTradeDay
     sigCnt := 0
-    // wipe yesterday's trade-plan drawings
     if not na(planE)
         line.delete(planE)
         planE := line(na)
@@ -1350,8 +910,7 @@ if newTradeDay
         planRes := label(na)
     planOn := false
     planDir := 0
-    appFired.clear()
-// per-session VWAP + IB: every session opens fresh
+// per-session VWAP + TWAP + IB: every session opens fresh
 if newSess
     sPV := 0.0
     sV := 0.0
@@ -1361,10 +920,6 @@ if newSess
     ibHi := high
     ibLo := low
     ibDone := false
-    accUp := 0
-    accDn := 0
-    firedUp := 0
-    firedDn := 0
 if inAnySess
     sPV += hlc3 * nz(volume)
     sV += nz(volume)
@@ -1378,6 +933,8 @@ float up1 = vwapV + sd
 float dn1 = vwapV - sd
 float up2 = vwapV + 2 * sd
 float dn2 = vwapV - 2 * sd
+float up3 = vwapV + 3 * sd
+float dn3 = vwapV - 3 * sd
 
 if inIBw
     ibHi := math.max(nz(ibHi, high), high)
@@ -1385,24 +942,14 @@ if inIBw
 if inAnySess and not inIBw and inIBw[1] and not na(ibHi)
     ibDone := true
 
-// ledger-feed event flags — set on confirmed bars, consumed at the bottom
-bool evTouch = false
-string evTouchTxt = ""
-bool evStamp = false
-string evStampTxt = ""
-bool evDayType = false
-string evDayTypeTxt = ""
-bool evAppr = false
-string evApprTxt = ""
-bool evBench = false
-string evBenchTxt = ""
+// NOTRADE event flag — set on confirmed bars, consumed at the bottom
 bool evNoTrade = false
 string evNoTradeTxt = ""
 
 // ── ROLLS + ACCUMULATION (confirmed bars only — no repaint) ────────────────
 bool tierChanged = false
 if barstate.isconfirmed
-    // ── REGIME step (2.6) — tier from the daily ATR percentile + VIX bump.
+    // ── REGIME step — tier from the daily ATR percentile + VIX bump.
     // Values only move at the daily roll (both pulls are prior-day [1]);
     // na percentile (young symbol) parks the tier at NORM.
     atrPct := atrPctD
@@ -1413,7 +960,7 @@ if barstate.isconfirmed
             tierNew := math.min(3, tierNew + (vixD >= inVix2 ? 2 : vixD >= inVix1 ? 1 : 0))
     tierChanged := tierNew != tier
     tier := tierNew
-    // ── EPOCH bumps + pending purge (2.6) — O(1) scope resets ────────────
+    // ── EPOCH bumps + pending purge — O(1) scope resets ──────────────────
     if newSess
         epSess += 1
     if timeframe.change("W")
@@ -1424,6 +971,7 @@ if barstate.isconfirmed
     if inA
         sawAsia := true
     if dayRoll
+        epDay += 1
         // evidence across the 16:00-18:00 settlement halt is polluted —
         // purge open pendings as NEITHER (touches counted at open; no EWMA)
         pdDirA.clear()
@@ -1433,9 +981,9 @@ if barstate.isconfirmed
         pdCnsA.clear()
         pdBeyA.clear()
         pdKeysA.clear()
-        // garbage collection: HVN/LVN bucket keys accrete over months and
-        // re-bucket on tier change — over the cap, drop the node stats
-        // wholesale (named keys are never pruned; they are the signal)
+        // garbage collection: HVN/LVN bucket keys accrete over months —
+        // over the cap, drop the node stats wholesale (named keys are never
+        // pruned; they are the signal)
         if dirStats.size() > inStatCap or freshStats.size() > inStatCap
             array<string> dks = dirStats.keys()
             for kk in dks
@@ -1492,17 +1040,17 @@ if barstate.isconfirmed
             f_add(lP, hl2, volume)
         if inRTH
             f_add(nP, hl2, volume)
-    f_stretch(dP, high, low)
-    f_stretch(wP, high, low)
+    f_stretchProf(dP, high, low)
+    f_stretchProf(wP, high, low)
     if inA
-        f_stretch(aP, high, low)
+        f_stretchProf(aP, high, low)
     if inL
-        f_stretch(lP, high, low)
+        f_stretchProf(lP, high, low)
     if inRTH
-        f_stretch(nP, high, low)
-    // ── cluster width (2.6): regime tier × dATR, recomputed ONLY at a
-    // session boundary or on tier change — bar-by-bar width churn scatters
-    // stats across neighboring HVN buckets and shuffles cluster identity
+        f_stretchProf(nP, high, low)
+    // ── cluster width: regime tier × dATR, recomputed ONLY at a session
+    // boundary or on tier change — bar-by-bar width churn scatters stats
+    // across neighboring HVN buckets and shuffles cluster identity
     if na(clustW) or newSess or tierChanged
         float wTarget = not na(dAtr) ? f_tierW() * dAtr : clustWSeed
         if na(clustW) or wTarget != clustW
@@ -1510,12 +1058,15 @@ if barstate.isconfirmed
             needCl := true
             // clustWv was derived at the top of the bar from the OLD width —
             // refresh it NOW so this bar's recluster, HVN bucket keys, pool
-            // zones and construction all use the new width (without this the
-            // whole session after a width change runs on stale geometry)
+            // zones and construction all use the new width
             clustWv := inClW > 0 ? inClW : clustW
+            // mrTol (touch/zone tolerance) was derived from the OLD clustWv
+            // at the top of the bar too — refresh it in lockstep, or this
+            // bar's touch detection and f_mrTest3 rejection test run one
+            // tier-width stale on every tier-change bar
+            mrTol := inMrTol > 0 ? inMrTol : 2 * clustWv
     if needCl
-        f_clusters(priorW, priorD, priorA, priorL, priorN, not htfMode, clustWv, clP, clR, clS, clN, clSt, clEB, clTch, clStB, clStV, clLoT, clHiT, clMemA, clMemN, memKey, memRank, memScope)
-        clAcc := array.new<int>(clP.size(), 0)
+        f_clusters(priorW, priorD, priorA, priorL, priorN, not htfMode, clustWv, clP, clR, clS, clN, clLoT, clHiT, clMemA, clMemN, memKey, memRank, memScope)
         needCl := false
     // ── developing levels — the LIVE read, refreshed every confirmed close ──
     if inRTH
@@ -1541,7 +1092,7 @@ if barstate.isconfirmed
     devDPoc := pd1
     devDVah := vd1
     devDVal := wd1
-    // ── up/down volume split (shared: zones · day type · approach · stamp)
+    // ── up/down volume split (delta standdown gate) ──────────────────────
     // Off the same lower-TF feed the profiles eat: an uptick LTF close books
     // its volume to the buyers, a downtick to the sellers. Approximation of
     // footprint order flow — Pine cannot read true bid/ask.
@@ -1559,259 +1110,23 @@ if barstate.isconfirmed
                         dnV += nz(array.get(ltfV, i))
                 lastLtf := pc
     barDelta := upV - dnV
-    cumSessDelta += barDelta
-    // initiative trackers (2.6): consecutive same-direction closes + bar
-    // volume total, kept as var series so the gates can read [k] history
+    barVolUD := upV + dnV
+    // initiative trackers: consecutive same-direction closes, kept as var
+    // series so the gates can read [k] history
     upStrk := close > close[1] ? upStrk + 1 : 0
     dnStrk := close < close[1] ? dnStrk + 1 : 0
-    barVolUD := upV + dnV
-    // ── imbalance zones (footprint proxy) ────────────────────────────────
-    // One-sided share ≥ ratio on real volume = the bar's body becomes a
-    // zone (approximation of stacked footprint imbalances).
-    if enImb
-        float totV = upV + dnV
-        // mitigation: close through the far side kills instantly; every
-        // other traversal COUNTS — passes consume the resting orders, so
-        // touch 1 dims the box (that touch was the trade) and touch N
-        // retires it. No more chopped-through wallpaper zones.
-        if imbLo.size() > 0
-            for i = imbLo.size() - 1 to 0
-                bool dead = imbDir.get(i) == 1 ? close < imbLo.get(i) : close > imbHi.get(i)
-                if not dead and time != imbBorn.get(i) and high >= imbLo.get(i) and low <= imbHi.get(i)
-                    int tch = imbTch.get(i) + 1
-                    imbTch.set(i, tch)
-                    if tch >= inImbTouches
-                        dead := true
-                    else
-                        color dimC = imbDir.get(i) == 1 ? colImbB : colImbS
-                        box.set_bgcolor(imbBx.get(i), color.new(dimC, showImbBoxes ? 93 : 100))
-                        box.set_border_color(imbBx.get(i), color.new(dimC, showImbBoxes ? 78 : 100))
-                if dead
-                    f_zoneKill(i)
-        if not htfMode and totV > 0 and (inImbVolK == 0 or nz(volume) >= inImbVolK * volSma)
-            float shr = math.max(upV, dnV) / totV
-            if shr >= inImbRatio and high > low
-                int zDir = upV >= dnV ? 1 : -1
-                float bodyHi = math.max(open, close)
-                float bodyLo = math.min(open, close)
-                // Footprint imbalances are ROWS, not whole bars — whole
-                // bodies painted trend days solid green. Zone = the ORIGIN
-                // third of the impulse body: where the aggressive side
-                // actually stepped in (min 2 ticks thick).
-                float third = math.max((bodyHi - bodyLo) / 3.0, 2 * syminfo.mintick)
-                float zHi = zDir == 1 ? bodyLo + third : bodyHi
-                float zLo = zDir == 1 ? bodyLo : bodyHi - third
-                // consecutive one-sided bars re-print the same area — one
-                // zone per area per side is the signal, the rest is paint
-                bool dupe = false
-                float zMid = (zHi + zLo) / 2.0
-                if imbLo.size() > 0
-                    for i = 0 to imbLo.size() - 1
-                        if imbDir.get(i) == zDir and zMid >= imbLo.get(i) and zMid <= imbHi.get(i)
-                            dupe := true
-                if zHi > zLo and not dupe
-                    // boxes hidden by default since 2.6 (real footprint lives
-                    // on another chart); the zone ENGINE + ◆ bonus stay live
-                    color zc = zDir == 1 ? colImbB : colImbS
-                    imbBx.push(box.new(time, zHi, time + barMs, zLo, xloc = xloc.bar_time, extend = extend.right, bgcolor = color.new(zc, showImbBoxes ? 88 : 100), border_color = color.new(zc, showImbBoxes ? 60 : 100), border_width = 1))
-                    imbHi.push(zHi)
-                    imbLo.push(zLo)
-                    imbDir.push(zDir)
-                    imbTch.push(0)
-                    imbBorn.push(time)
-                    // cap per side, oldest out
-                    int nB = 0
-                    int nS = 0
-                    for i = 0 to imbDir.size() - 1
-                        if imbDir.get(i) == 1
-                            nB += 1
-                        else
-                            nS += 1
-                    if nB > inImbMax or nS > inImbMax
-                        int killDir = nB > inImbMax ? 1 : -1
-                        for i = 0 to imbDir.size() - 1
-                            if imbDir.get(i) == killDir
-                                f_zoneKill(i)
-                                break
-    // ── DAY TYPE trackers ────────────────────────────────────────────────
-    // full-day ranges feed ADR(10) — tracked on-chart, no extra request
-    if timeframe.change("D")
-        if not na(dayHiT) and not na(dayLoT) and dayHiT > dayLoT
-            adrArr.push(dayHiT - dayLoT)
-            if adrArr.size() > 10
-                adrArr.shift()
-        dayHiT := high
-        dayLoT := low
-    else
-        dayHiT := math.max(nz(dayHiT, high), high)
-        dayLoT := math.min(nz(dayLoT, low), low)
-    // 15m buckets for one-timeframing (chart bars stand in on ≥15m charts)
-    if timeframe.change("15") or tfSec >= 900
-        if not na(m15Hi) and not na(m15PrevHi)
-            m15UpStreak := m15Lo > m15PrevLo ? m15UpStreak + 1 : 0
-            m15DnStreak := m15Hi < m15PrevHi ? m15DnStreak + 1 : 0
-        m15PrevHi := m15Hi
-        m15PrevLo := m15Lo
-        m15Hi := high
-        m15Lo := low
-    else
-        m15Hi := math.max(nz(m15Hi, high), high)
-        m15Lo := math.min(nz(m15Lo, low), low)
-    // session flip resets
+    // ── session extremes (pool sesH/sesL) ────────────────────────────────
     bool sessFlip = sessNow != sessPrev
     if sessFlip
         sessPrev := sessNow
         sessHi := high
         sessLo := low
-        sessOpen := open
-        cumSessDelta := barDelta
-        evalCum.clear()
-        evalDelta.clear()
-        lastEvalCum := 0.0
-        ibBrokeUp := false
-        ibBrokeDn := false
-        dtState := "TRANSITION"
-        dtCand := ""
-        dtCandN := 0
-        dtT := 0
     else
         sessHi := math.max(nz(sessHi, high), high)
         sessLo := math.min(nz(sessLo, low), low)
-    if ibDone and not na(ibHi)
-        if close > ibHi
-            ibBrokeUp := true
-        if close < ibLo
-            ibBrokeDn := true
-    // ── DAY TYPE evaluation (5m clock; chart TF when ≥ 5m) ───────────────
-    if dtOn and sessNow != "OFF" and (tfSec >= 300 or timeframe.change("5"))
-        evalDelta.push(cumSessDelta - lastEvalCum)
-        lastEvalCum := cumSessDelta
-        evalCum.push(cumSessDelta)
-        if evalCum.size() > 24
-            evalCum.shift()
-        if evalDelta.size() > 24
-            evalDelta.shift()
-        float pdVahP = f_lvlPrice(priorD, "pdVAH")
-        float pdValP = f_lvlPrice(priorD, "pdVAL")
-        // D1 · session open vs prior day value
-        int d1 = na(sessOpen) or na(pdVahP) or na(pdValP) ? 0 : sessOpen > pdVahP ? 2 : sessOpen < pdValP ? -2 : 0
-        // D2 · IB break holding half the range beyond (the script's NY IB)
-        int d2 = 0
-        if ibDone and not na(ibHi) and ibHi > ibLo and not (ibBrokeUp and ibBrokeDn)
-            float ibR = ibHi - ibLo
-            if ibBrokeUp and close >= ibHi + 0.5 * ibR
-                d2 := 2
-            else if ibBrokeDn and close <= ibLo - 0.5 * ibR
-                d2 := -2
-        // D3 · developing value vs prior day value
-        int d3 = 0
-        bool valueOverlapping = false
-        if not na(devDVal) and not na(devDVah) and not na(pdVahP) and not na(pdValP) and devDVah > devDVal and pdVahP > pdValP
-            float ovl = math.min(devDVah, pdVahP) - math.max(devDVal, pdValP)
-            float minW = math.min(devDVah - devDVal, pdVahP - pdValP)
-            float ovlPct = minW > 0 ? math.max(ovl, 0.0) / minW : 0.0
-            if ovlPct >= 0.5
-                valueOverlapping := true
-            else if ovlPct < 0.25
-                d3 := (devDVal + devDVah) / 2 > (pdValP + pdVahP) / 2 ? 2 : -2
-        // D4 · one-timeframing on 15m buckets
-        int d4 = m15UpStreak >= dtOneTfStreak ? 2 : m15DnStreak >= dtOneTfStreak ? -2 : 0
-        // D5 · cumulative session delta trend (slope + same-sign share)
-        int d5 = 0
-        if evalCum.size() >= 8
-            float slp = f_slope(evalCum)
-            int pos = 0
-            int neg = 0
-            for dv in evalDelta
-                if dv > 0
-                    pos += 1
-                else if dv < 0
-                    neg += 1
-            int totE = evalDelta.size()
-            float share = totE > 0 ? float(math.max(pos, neg)) / totE : 0.0
-            if not na(slp) and share >= 0.65
-                d5 := slp > 0 and pos >= neg ? 1 : slp < 0 and neg > pos ? -1 : 0
-        dtT := d1 + d2 + d3 + d4 + d5
-        // participation gate — no TREND print on a dead-range session
-        float adrAvg = adrArr.size() > 0 ? adrArr.avg() : na
-        float gateFrac = sessNow == "NY" ? dtRangeNY : sessNow == "LDN" ? dtRangeLDN : dtRangeAS
-        dtGateOK := not na(adrAvg) and adrAvg > 0 and not na(sessHi) and (sessHi - sessLo) >= gateFrac * adrAvg
-        string cand = math.abs(dtT) >= dtTrendThresh and dtGateOK ? (dtT > 0 ? "TREND▲" : "TREND▼") : math.abs(dtT) <= dtBalThresh and valueOverlapping ? "BALANCE" : "TRANSITION"
-        if cand == dtCand
-            dtCandN += 1
-        else
-            dtCand := cand
-            dtCandN := 1
-        if dtCandN >= dtHysteresis and dtState != cand
-            evDayType := true
-            evDayTypeTxt := "EVT=DAYTYPE|" + dtState + "->" + cand + "|T=" + str.tostring(dtT) + "|session=" + sessNow
-            dtState := cand
-    // ── APPROACH grade (execution only, display only) ────────────────────
-    if not htfMode
-        int dirTrav = close > close[apWindow] ? 1 : close < close[apWindow] ? -1 : 0
-        float bestD = 1.0e18
-        float bestP = na
-        float bestR2 = 0.0
-        string bestN = ""
-        if apOn and dirTrav != 0 and clP.size() > 0
-            for i = 0 to clP.size() - 1
-                float lp = clP.get(i)
-                if clR.get(i) >= inMinRank and (dirTrav == 1 ? lp > close : lp < close)
-                    float dd2 = math.abs(lp - close)
-                    if dd2 < bestD
-                        bestD := dd2
-                        bestP := lp
-                        bestR2 := clR.get(i)
-                        bestN := clN.get(i)
-        if apOn and not na(bestP) and bestD > mrTol and bestD <= apMaxDist * tgtPts
-            float netMove = math.abs(close - close[apWindow])
-            float sumRng = 0.0
-            for i = 0 to apWindow - 1
-                sumRng += high[i] - low[i]
-            float effRatio = sumRng > 0 ? netMove / sumRng : 0.0
-            float speedRatio = atr14 > 0 ? netMove / (apWindow * atr14) : 0.0
-            float runExt = close[apWindow]
-            float maxPull = 0.0
-            for i = apWindow - 1 to 0
-                float c0 = close[i]
-                if dirTrav == 1
-                    runExt := math.max(runExt, c0)
-                    maxPull := math.max(maxPull, runExt - c0)
-                else
-                    runExt := math.min(runExt, c0)
-                    maxPull := math.max(maxPull, c0 - runExt)
-            float pullPct = netMove > 0 ? maxPull / netMove * 100 : 100.0
-            int alignN = 0
-            for i = 0 to apWindow - 1
-                float bd2 = barDelta[i]
-                if (dirTrav == 1 and bd2 > 0) or (dirTrav == -1 and bd2 < 0)
-                    alignN += 1
-            float alignPct = 100.0 * alignN / apWindow
-            string grade = effRatio >= apEffMin and speedRatio >= apSpeedMin and pullPct <= apPullMax ? "DRIVE" :
-                 speedRatio <= apSpeedDrift and alignPct >= apAlignLo and alignPct <= apAlignHi ? "DRIFT" : "GRIND"
-            bool freshTarget = na(apLvlP) or math.abs(bestP - apLvlP) > mrTol
-            if grade != apGrade or freshTarget
-                evAppr := true
-                evApprTxt := "EVT=APPR|" + grade + "|target=" + bestN + " " + f_starTxt(f_stars(bestR2)) + "|dist_t=" + str.tostring(math.round(bestD / syminfo.mintick))
-                if apChartLabel and freshTarget and (not apLabelDriveOnly or grade == "DRIVE")
-                    apLbs.push(label.new(time, bestP, (dirTrav == 1 ? "▲ " : "▼ ") + grade, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(#0d0d10, 30), textcolor = grade == "DRIVE" ? colStop : grade == "GRIND" ? colUp : #787b86, size = size.tiny, tooltip = grade == "DRIVE" ? "Fast directional arrival — break-retest favored; reversal only on a strong react score" : grade == "GRIND" ? "Rotational two-way arrival — reversal favored" : "Thin, low-participation arrival — pass or half size"))
-                    if apLbs.size() > 10
-                        label.delete(apLbs.shift())
-            apDir := dirTrav
-            apGrade := grade
-            apLvlP := bestP
-            apLvlR := bestR2
-            apLvlN := bestN
-        else
-            apDir := 0
-            apGrade := ""
-            apLvlP := na
-            apLvlR := 0.0
-            apLvlN := ""
-    // ── LEVEL POOL (2.6) — one working set: clusters + dynamic singletons ─
-    // Rebuilt every confirmed bar. Touch engine, MR engine, HUD and the
-    // execution render all read THIS. Pool index == cluster index for the
-    // first clP.size() items (REACT/stamp arrays stay cluster-indexed).
+    // ── LEVEL POOL — one working set: clusters + dynamic singletons ──────
+    // Rebuilt every confirmed bar. Pool index == cluster index for the
+    // first clP.size() items.
     poolP.clear()
     poolLoT.clear()
     poolHiT.clear()
@@ -1843,7 +1158,7 @@ if barstate.isconfirmed
         // the level where the chart DREW it, and never let a bar that
         // itself makes the new extreme count as touching it. Continuous
         // VWAP/σ pool at current confirmed values, matching where plot()
-        // draws them and the pre-2.6 MR pool. Toggles mirror the old pool.
+        // draws them.
         if inclVwap
             f_poolAdd(vwapV, "VWAP", 10, 1)
         if inclTwap
@@ -1867,13 +1182,12 @@ if barstate.isconfirmed
             f_poolAdd(devDPoc[1], "dPOC", 8, 2)
             f_poolAdd(devDVah[1], "dVAH", 6, 2)
             f_poolAdd(devDVal[1], "dVAL", 6, 2)
-    // ── PENDING-TOUCH RESOLUTION (2.6) ───────────────────────────────────
+    // ── PENDING-TOUCH RESOLUTION ─────────────────────────────────────────
     // Runs BEFORE touch detection and BEFORE any score is read this bar:
     // a break completed THIS bar is completed-bar information; this bar's
-    // own touch outcome is not (that would be intra-bar future leak).
-    // HOLD wins over BREAK on the same bar: a wick through the far edge
-    // that closes back with travel is a sweep-and-reclaim — closes are the
-    // arbiter everywhere else in this script.
+    // own touch outcome is not. HOLD wins over BREAK on the same bar: a
+    // wick through the far edge that closes back with travel is a
+    // sweep-and-reclaim — closes are the arbiter everywhere in this script.
     if pdBarA.size() > 0
         for j = pdBarA.size() - 1 to 0
             int age = bar_index - pdBarA.get(j)
@@ -1895,12 +1209,10 @@ if barstate.isconfirmed
                     pdCnsA.remove(j)
                     pdBeyA.remove(j)
                     pdKeysA.remove(j)
-    // ── TOUCH DETECTION (2.6) — freshness counts NOW, outcome window opens,
-    // REACT scores the same event. A signal fired on the touch bar must see
-    // this touch in its freshness (otherwise touch N grades with touch N−1's
-    // decay forever); the EWMA never moves here.
+    // ── TOUCH DETECTION — freshness counts NOW, outcome window opens. A
+    // signal fired on the touch bar must see this touch in its freshness;
+    // the EWMA never moves here.
     if not htfMode and poolP.size() > 0
-        float bestTchR = -1.0
         for i = 0 to poolP.size() - 1
             float zLoT = poolLoT.get(i)
             float zHiT = poolHiT.get(i)
@@ -1936,12 +1248,10 @@ if barstate.isconfirmed
                                 keysCsv := keysCsv == "" ? item : keysCsv + ";" + item
                         // touch-bar immediate outcomes — SYMMETRIC seeds. A
                         // sweep that already closed back on the approach side
-                        // with travel is a HOLD right now (the liquidity-tap
-                        // rejection this method trades; letting only the wick
-                        // excursion seed BREAK would book that exact bar as a
-                        // BREAK — backwards). A close through the far edge
-                        // already meeting the acceptance count (inAcc = 1) is
-                        // a BREAK right now. Everything else opens the window.
+                        // with travel is a HOLD right now. A close through
+                        // the far edge already meeting the acceptance count
+                        // is a BREAK right now. Everything else opens the
+                        // outcome window.
                         int seedCns = (tDir == 1 ? close > zHiT : close < zLoT) ? 1 : 0
                         bool holdNow = not na(dAtr) and (tDir == 1 ? close <= zLoT - inHoldTravel * dAtr : close >= zHiT + inHoldTravel * dAtr)
                         if holdNow
@@ -1965,435 +1275,119 @@ if barstate.isconfirmed
                             pdCnsA.push(seedCns)
                             pdBeyA.push(math.max(0.0, tDir == 1 ? high - zHiT : zLoT - low))
                             pdKeysA.push(keysCsv)
-                        int arrDir = tDir
-                        float lp = poolP.get(i)
-                        bool ranked = poolRank.get(i) >= inMinRank
-                        if ranked and i < clTch.size()
-                            clTch.set(i, clTch.get(i) + 1)
-                        // REACT — same evidence, same score, now fired off
-                        // the unified touch event (its own detection loop
-                        // and stampRearm arming are gone: one pending = one
-                        // interaction = one stamp)
-                        if stOn and ranked
-                            // S1 · delta flip vs arrival, scaled by size
-                            float avgAbsD = 0.0
-                            for k = 1 to apWindow
-                                avgAbsD += math.abs(barDelta[k])
-                            avgAbsD /= apWindow
-                            bool flip = (arrDir == 1 and barDelta < 0) or (arrDir == -1 and barDelta > 0)
-                            float s1 = flip and avgAbsD > 0 ? stW1 * math.min(math.abs(barDelta) / avgAbsD, 1.0) : 0.0
-                            // S2 · volume share in the extreme third (LTF hl2 bins)
-                            float s2 = 0.0
-                            if barRng > 0 and nZ > 0
-                                float vBot = 0.0
-                                float vTop = 0.0
-                                float vAll = 0.0
-                                for k = 0 to nZ - 1
-                                    float hp = array.get(ltfH, k)
-                                    float vv2 = nz(array.get(ltfV, k))
-                                    if not na(hp)
-                                        vAll += vv2
-                                        float posK = (hp - low) / barRng
-                                        if posK <= 0.3333
-                                            vBot += vv2
-                                        if posK >= 0.6667
-                                            vTop += vv2
-                                if vAll > 0
-                                    float share2 = arrDir == -1 ? vBot / vAll : vTop / vAll
-                                    float ramp = (share2 * 100 - 30) / math.max(stBotShare - 30, 1)
-                                    s2 := stW2 * math.max(0.0, math.min(1.0, ramp))
-                            // S3 · rejection structure on the close (MR's close-position read)
-                            float s3 = 0.0
-                            bool wickBeyond = arrDir == -1 ? low < lp : high > lp
-                            bool sideOK = arrDir == -1 ? close > lp : close < lp
-                            float cp = arrDir == -1 ? cPos : 1 - cPos
-                            if wickBeyond and sideOK
-                                s3 := cp >= inWick ? float(stW3) : cp >= 0.45 ? stW3 * 0.5 : 0.0
-                            // S4 · effort/result: new price extreme, delta not confirming
-                            float s4 = 0.0
-                            float prevExt = arrDir == -1 ? low[1] : high[1]
-                            for k = 2 to apWindow
-                                prevExt := arrDir == -1 ? math.min(prevExt, low[k]) : math.max(prevExt, high[k])
-                            bool newExt = arrDir == -1 ? low < prevExt : high > prevExt
-                            if newExt
-                                if flip
-                                    s4 := float(stW4)
-                                else if math.abs(barDelta) <= 0.25 * avgAbsD
-                                    s4 := stW4 * 0.5
-                            float wTot = stW1 + stW2 + stW3 + stW4
-                            float score = wTot > 0 ? (s1 + s2 + s3 + s4) * 100.0 / wTot : 0.0
-                            string band = score >= 70 ? "✓" : score >= 40 ? "–" : "✗"
-                            if i < clStB.size()
-                                clStB.set(i, bar_index)
-                                clStV.set(i, score)
-                            stLastScore := score
-                            stLastBand := band
-                            stLastName := poolName.get(i)
-                            stLastBar := bar_index
-                            // 2.7: label only the defended touches — the
-                            // chart stops wallpapering 0% ✗. Score always
-                            // computes; stats/gates/feed see everything.
-                            if inReactShowMin == 0 or score >= inReactShowMin
-                                color scol = score >= 70 ? colUp : score >= 40 ? #ffb300 : colStop
-                                stLbs.push(label.new(time, arrDir == -1 ? low : high, "REACT " + str.tostring(math.round(score)) + "% " + band, xloc = xloc.bar_time, style = arrDir == -1 ? label.style_label_up : label.style_label_down, color = color.new(#0d0d10, 20), textcolor = scol, size = size.small))
-                                if stLbs.size() > 20
-                                    label.delete(stLbs.shift())
-                            evStamp := true
-                            evStampTxt := "EVT=REACT|" + syminfo.ticker + "|" + str.tostring(time) + "|level=" + poolName.get(i) + "|score=" + str.tostring(math.round(score)) + "|band=" + band
-                        if ranked and poolRank.get(i) > bestTchR
-                            bestTchR := poolRank.get(i)
-                            int tchNo = i < clTch.size() ? clTch.get(i) : 1
-                            evTouch := true
-                            evTouchTxt := "EVT=TOUCH|" + syminfo.ticker + "|" + str.tostring(time) + "|level=" + poolName.get(i) + "|rank=" + str.tostring(math.round(poolRank.get(i))) + "|stars=" + str.tostring(f_stars(poolRank.get(i))) + "|price=" + str.tostring(lp, format.mintick) + "|touchNo=" + str.tostring(tchNo) + "|session=" + sessNow + "|daytype=" + dtState + "|appr=" + (apGrade == "" ? "NONE" : apGrade)
 
-// ── SIGNAL ENGINE (execution mode · confirmed close only) ──────────────────
-bool sigIBUp = false
-bool sigIBDn = false
+// ── SIGNAL ENGINE — the one edge (execution mode · confirmed close only) ───
 bool sigMRUp = false
 bool sigMRDn = false
-bool sigBRTUp = false
-bool sigBRTDn = false
 int fireDir = 0
-string fireTag = ""
 string fireLvl = ""
-float fireRank = 0.0
-// dynamically constructed prices (na = the firing play has no dynamic
-// construction — APP/BRT). 2.7: MR and IB both build these.
 float mrE = na
 float mrS = na
 float mrT = na
+float mrT2 = na
 float mrR = na
-string dynTag = ""
+string mrTgtNm = ""
 
 if barstate.isconfirmed and not htfMode
-    if inAnySess and ibDone and not na(ibHi)
-        accUp := close > ibHi ? accUp + 1 : 0
-        accDn := close < ibLo ? accDn + 1 : 0
-    bool gate = (not inRthOnly or inRTH) and (not inSessOnly or inAnySess) and (not useLunch or not inLunch) and (not inHardCap or sigCnt < inMaxSig) and bar_index - lastSigBar >= inCd
-    // IB — the set play (priority). 2.7: fires through the SAME dynamic
-    // construction as MR — entry = broken IB edge (retest resting limit),
-    // structure stop inside the balance, TP1 in front of the next opposing
-    // qualifying level, room gate included. Room fails → NOTRADE and the
-    // per-side shot is NOT consumed (a re-acceptance retries with room).
-    // No initiative/delta standdowns here — those are anti-reversal gates;
-    // IB rides WITH the move.
-    if enIB and gate and ibDone and not na(dAtr) and ((accUp == inAcc and firedUp < inMaxBrk) or (accDn == inAcc and firedDn < inMaxBrk))
-        int ibDir = accUp == inAcc and firedUp < inMaxBrk ? 1 : -1
-        string ibNm = ibDir == 1 ? "IBH" : "IBL"
-        // the IB edge is always a pool singleton while ibDone (f_poolAdd)
-        int ibIdx = -1
-        if poolP.size() > 0
-            for i = 0 to poolP.size() - 1
-                if poolName.get(i) == ibNm
-                    ibIdx := i
-        if ibIdx >= 0
-            [ie1, is1, it1, ir1, iOk] = f_construct(ibIdx, ibDir, dAtr)
-            if iOk
-                fireDir := ibDir
-                fireTag := ibDir == 1 ? "IB ▲" : "IB ▼"
-                fireLvl := ibNm + " " + str.tostring(ibDir == 1 ? ibHi : ibLo, format.mintick)
-                fireRank := 4
-                mrE := ie1
-                mrS := is1
-                mrT := it1
-                mrR := ir1
-                dynTag := "IB"
-                if ibDir == 1
-                    firedUp += 1
-                else
-                    firedDn += 1
-            else
-                evNoTrade := true
-                evNoTradeTxt := "EVT=NOTRADE|reason=room|play=IB|side=" + (ibDir == 1 ? "long" : "short") + "|level=" + ibNm
-    // MR — reversal at a working level. 2.6: candidates come from the
-    // unified pool, gated by EFFECTIVE SCORE (arrival direction), the
-    // initiative/delta standdowns, then DYNAMIC CONSTRUCTION + room gate.
-    // Direction table: long fire = price arrived fromAbove (|A) = -bD.
-    if enMR and gate and fireDir == 0 and poolP.size() > 0 and not na(dAtr)
+    // §1 REGIME — ADX(14) on the chart TF, confirmed bar only
+    int mrRegime = adxV < adxGreen ? 2 : adxV < adxAmber ? 1 : 0
+    // §2 STRETCH — σ-distance from session VWAP OR range-multiple fallback
+    float sigmaDist = not na(vwapV) and not na(sd) and sd > 0 ? (close - vwapV) / sd : na
+    float absSigma = na(sigmaDist) ? float(na) : math.abs(sigmaDist)
+    bool rangeStretch = not na(vwapV) and atr14 > 0 and math.abs(close - vwapV) >= stretchRangeMult * atr14
+    bool stretchOK = (not na(absSigma) and absSigma >= stretchSigmaMin) or rangeStretch
+    // direction: below VWAP = long candidate, above = short
+    int candDir = na(vwapV) ? 0 : close < vwapV ? 1 : close > vwapV ? -1 : 0
+    bool extremeOK = not na(absSigma) and absSigma >= EXT_SIGMA
+    bool regimePass = mrRegime == 2 or (mrRegime == 1 and extremeOK)
+    float needScore = f_tierTrd() + (mrRegime == 1 ? EXT_BUMP : 0.0)
+    // §3 TRIGGER — RSI(7), strict thresholds in EXTREME-ONLY, 2-bar window
+    float thrLong = mrRegime == 1 ? rsiLongStrict : rsiLong
+    float thrShort = mrRegime == 1 ? rsiShortStrict : rsiShort
+    bool rsiTrig = candDir == 1 ? (rsiV <= thrLong or rsiV[1] <= thrLong) : candDir == -1 ? (rsiV >= thrShort or rsiV[1] >= thrShort) : false
+    // HUD gate tokens — confirmed-bar snapshots, display only
+    adxDisp := adxV
+    regDisp := mrRegime
+    sigmaDisp := sigmaDist
+    rsiDisp := rsiV
+    stretchDispOK := stretchOK
+    rsiDispOK := rsiTrig
+    lvlDispOK := false
+    if poolP.size() > 0 and candDir != 0
+        for i = 0 to poolP.size() - 1
+            if high >= poolLoT.get(i) - mrTol and low <= poolHiT.get(i) + mrTol and f_poolScore(i, -candDir) >= needScore
+                lvlDispOK := true
+    // signal validity: after validBars the emitted prices are stale
+    if sigDir != 0 and bar_index - nz(sigBorn, -99999) >= inValidBars
+        sigDir := 0
+    // §4 LEVEL + §5 CONFIRMATION + §6 TICKET
+    bool gate = (not inRthOnly or inRTH) and (not inSessOnly or inAnySess) and (not inHardCap or sigCnt < inMaxSig) and bar_index - lastSigBar >= inCd
+    if enMR and gate and regimePass and stretchOK and rsiTrig and candDir != 0 and poolP.size() > 0 and not na(dAtr)
+        // the stretch must land ON structure: rejection at the
+        // highest-scoring touched pool level (±2σ bands are pool levels, so
+        // a 2σ tag counts). VWAP stretch alone is never enough.
         float bScore = 0.0
-        int bD = 0
         int bIdx = -1
         for i = 0 to poolP.size() - 1
-            int d = f_mrTest(poolP.get(i))
-            if d != 0
+            int d = f_mrTest3(i)
+            if d == candDir
                 float eff = f_poolScore(i, -d)
-                if eff >= f_tierTrd() and eff > bScore
+                if eff >= needScore and eff > bScore
                     bScore := eff
-                    bD := d
                     bIdx := i
-        if bD != 0
-            bool volOK = not useVolMR or na(volume) or relVol >= volKMR
-            // opt-in stamp gate (unchanged; cluster items only)
-            bool stampOK = true
-            if stampGateMR and stOn and bIdx < clStB.size()
-                float needStamp = stampMinMR + (stampDriveStrict and apGrade == "DRIVE" ? 10 : 0)
-                stampOK := clStB.get(bIdx) >= 0 and bar_index - clStB.get(bIdx) <= 1 and nz(clStV.get(bIdx), 0) >= needStamp
-            // initiative standdown (§5.3) — don't step in front of a train:
+        if bIdx >= 0
+            // initiative standdown — don't step in front of a train:
             // approach velocity and consecutive closes INTO the level
             float vel = math.abs(close - close[inApprBars]) / inApprBars
             bool velOK = vel <= inVMax * dAtr
             // streak as of the bar BEFORE the trigger — the rejection bar
             // itself usually closes against the approach and would zero the
             // very streak this gate exists to measure
-            bool strkOK = (bD == 1 ? dnStrk[1] : upStrk[1]) <= inCMax
-            // delta standdown (§5.4) — one-sided initiative flow into the
-            // level with the approach = absorption absent. Filter, not
-            // trigger; the scripted stand-in for the manual footprint read.
+            bool strkOK = (candDir == 1 ? dnStrk[1] : upStrk[1]) <= inCMax
+            // delta standdown — one-sided initiative flow into the level
+            // with the approach = absorption absent. Filter, not trigger.
             bool deltaOK = true
             if useLtfDelta
-                // the APPROACH window ([1..n]) — the trigger bar's own
-                // flipped delta is the rejection, not the arrival, and
-                // including it dilutes the hostile flow it filters for
                 float dSum = 0.0
                 float vSum = 0.0
                 for k = 1 to inApprBars
                     dSum += barDelta[k]
                     vSum += barVolUD[k]
-                float nd = vSum > 0 ? dSum / vSum : 0.0
-                deltaOK := (bD == 1 ? -nd : nd) < inDMax
-            if volOK and stampOK and velOK and strkOK and deltaOK
-                [ce, cs, ct, cr, roomOk] = f_construct(bIdx, bD, dAtr)
+                float ndl = vSum > 0 ? dSum / vSum : 0.0
+                deltaOK := (candDir == 1 ? -ndl : ndl) < inDMax
+            if velOK and strkOK and deltaOK
+                [ce, cs, ct, ct2, cr, roomOk, tnm] = f_construct3(bIdx, candDir, dAtr, candDir == 1 ? loW : hiW, vwapV)
                 if roomOk
-                    fireDir := bD
-                    fireTag := bD == 1 ? "MR ▲" : "MR ▼"
+                    fireDir := candDir
                     fireLvl := poolName.get(bIdx) + " " + str.tostring(math.round(bScore, 1)) + "★ @ " + str.tostring(poolP.get(bIdx), format.mintick)
-                    fireRank := bScore
                     mrE := ce
                     mrS := cs
                     mrT := ct
+                    mrT2 := ct2
                     mrR := cr
-                    dynTag := "MR"
+                    mrTgtNm := tnm
                 else
-                    // room gate failed at the FIRST opposing qualifying
-                    // level — NO TRADE, never target through a working
-                    // level (see money, take money)
                     evNoTrade := true
-                    evNoTradeTxt := "EVT=NOTRADE|reason=room|side=" + (bD == 1 ? "long" : "short") + "|level=" + poolName.get(bIdx) + "|score=" + str.tostring(math.round(bScore))
-    // APP — toward play: ride INTO a powerful level inside the approach window
-    if enAPP and gate and fireDir == 0
-        array<float> ap = array.new<float>()
-        array<float> ark = array.new<float>()
-        array<string> anm = array.new<string>()
-        if clP.size() > 0
-            for i = 0 to clP.size() - 1
-                float rEffA = clR.get(i) + (f_inZone(clP.get(i)) != 0 ? inImbBonus : 0)
-                if rEffA >= inAppRank
-                    ap.push(clP.get(i))
-                    ark.push(rEffA)
-                    anm.push(clN.get(i) + (rEffA > clR.get(i) ? "◆" : ""))
-        if inAppDyn
-            if not na(vwapV) and 10 >= inAppRank
-                ap.push(vwapV)
-                ark.push(10)
-                anm.push("VWAP")
-            if not na(sessHi[1]) and 8 >= inAppRank
-                ap.push(sessHi[1])
-                ark.push(8)
-                anm.push("sesH")
-                ap.push(sessLo[1])
-                ark.push(8)
-                anm.push("sesL")
-            float tDPoc2 = devDPoc[1]
-            if not na(tDPoc2) and 8 >= inAppRank
-                ap.push(tDPoc2)
-                ark.push(8)
-                anm.push("dPOC")
-            if not na(up2) and 6 >= inAppRank
-                ap.push(up2)
-                ark.push(6)
-                anm.push("+2σ")
-                ap.push(dn2)
-                ark.push(6)
-                anm.push("-2σ")
-            if not na(onHi) and 6 >= inAppRank
-                ap.push(onHi)
-                ark.push(6)
-                anm.push("ONH")
-                ap.push(onLo)
-                ark.push(6)
-                anm.push("ONL")
-        float aBestR = 0.0
-        float aBestD = 1.0e18
-        float aLvl = na
-        string aNm = ""
-        int aDir = 0
-        if ap.size() > 0
-            for i = 0 to ap.size() - 1
-                float lvl = ap.get(i)
-                float dToL = math.abs(lvl - close)
-                if dToL >= inAppNear * tgtPts and dToL <= inAppFar * tgtPts
-                    int dirT = lvl > close ? 1 : -1
-                    bool withMove = dirT == 1 ? close > cPrev and cPos >= inAppPos : close < cPrev and cPos <= 1 - inAppPos
-                    bool untouched = dirT == 1 ? appHiN < lvl - mrTol : appLoN > lvl + mrTol
-                    bool freshLvl = true
-                    if appFired.size() > 0
-                        for j = 0 to appFired.size() - 1
-                            if math.abs(lvl - appFired.get(j)) <= mrTol
-                                freshLvl := false
-                    bool better = ark.get(i) > aBestR or (ark.get(i) == aBestR and dToL < aBestD)
-                    if withMove and untouched and freshLvl and better
-                        aBestR := ark.get(i)
-                        aBestD := dToL
-                        aLvl := lvl
-                        aNm := anm.get(i)
-                        aDir := dirT
-        if aDir != 0
-            // 2.9: APP is ADVISORY — a with-move ride into a wall has no
-            // structure behind the entry, so it gets a read, not a ticket.
-            // Was the last play still emitting fixed-tick E/S/T; killing
-            // that ends the "stamped +32t while T1 sits higher" confusion.
-            // No count, no plan lines, no alert — dim label + one-shot per
-            // level only.
-            appFired.push(aLvl)
-            apLbs.push(label.new(time, aDir == 1 ? low : high, (aDir == 1 ? "APP ▲ → " : "APP ▼ → ") + aNm, xloc = xloc.bar_time, style = aDir == 1 ? label.style_label_up : label.style_label_down, color = color.new(#0d0d10, 40), textcolor = aDir == 1 ? colUp : colDn, size = size.tiny, tooltip = f_scoreTxt(aBestR) + " " + aNm + " @ " + str.tostring(aLvl, format.mintick) + " — advisory: riding toward the level; the reaction THERE is the next decision"))
-            if apLbs.size() > 10
-                label.delete(apLbs.shift())
-    // BRT — punched cluster, retest holds → continuation
-    if enBRT and clP.size() > 0
-        for i = 0 to clP.size() - 1
-            if clR.get(i) >= inMinRank
-                int st = clSt.get(i)
-                float p = clP.get(i)
-                if st == 0
-                    // 2.9.2: a BREAK is ACCEPTANCE (inAcc consecutive closes
-                    // beyond the escape margin, same standard as IB) — one
-                    // close poking through is chop, and chop was firing
-                    // wick-through-VWAP "retests" that were nothing.
-                    int acc = i < clAcc.size() ? clAcc.get(i) : 0
-                    acc := close > p + brtEsc ? math.max(acc, 0) + 1 : close < p - brtEsc ? math.min(acc, 0) - 1 : 0
-                    if i < clAcc.size()
-                        clAcc.set(i, acc)
-                    if acc >= inAcc
-                        clSt.set(i, 1)
-                        clEB.set(i, bar_index)
-                    else if acc <= -inAcc
-                        clSt.set(i, 2)
-                        clEB.set(i, bar_index)
-                else if st == 1
-                    if close < p
-                        clSt.set(i, 0)
-                        if i < clAcc.size()
-                            clAcc.set(i, 0)
-                    else if bar_index - clEB.get(i) > inBrtWatch
-                        clSt.set(i, 3)
-                    // retest quality (2.9.2): separation from the break
-                    // (min gap bars) + depth (low reaches within half a
-                    // cluster width of the level) + rejection close (same
-                    // wick standard as MR) + EffScore ≥ the regime trade
-                    // floor from the approach side.
-                    else if bar_index - clEB.get(i) >= brtMinGap and low <= p + clustWv * 0.5 and close > p and cPos >= inWick and gate and fireDir == 0 and not na(dAtr) and i < poolP.size() and f_poolScore(i, -1) >= f_tierTrd()
-                        // 2.8: BRT fires through dynamic construction —
-                        // pool idx == cluster idx for cluster items. Room
-                        // fails → NOTRADE, state stays 1 so a later retest
-                        // inside the watch window can retry with room.
-                        [be1, bs1, bt1, br1, bOk] = f_construct(i, 1, dAtr)
-                        if bOk
-                            clSt.set(i, 3)
-                            fireDir := 1
-                            fireTag := "BRT ▲"
-                            fireLvl := clN.get(i) + " " + str.tostring(math.round(f_poolScore(i, -1), 1)) + "★ @ " + str.tostring(p, format.mintick)
-                            fireRank := clR.get(i)
-                            mrE := be1
-                            mrS := bs1
-                            mrT := bt1
-                            mrR := br1
-                            dynTag := "BRT"
-                        else
-                            evNoTrade := true
-                            evNoTradeTxt := "EVT=NOTRADE|reason=room|play=BRT|side=long|level=" + clN.get(i)
-                else if st == 2
-                    if close > p
-                        clSt.set(i, 0)
-                        if i < clAcc.size()
-                            clAcc.set(i, 0)
-                    else if bar_index - clEB.get(i) > inBrtWatch
-                        clSt.set(i, 3)
-                    else if bar_index - clEB.get(i) >= brtMinGap and high >= p - clustWv * 0.5 and close < p and cPos <= 1 - inWick and gate and fireDir == 0 and not na(dAtr) and i < poolP.size() and f_poolScore(i, 1) >= f_tierTrd()
-                        [be2, bs2, bt2, br2, bOk2] = f_construct(i, -1, dAtr)
-                        if bOk2
-                            clSt.set(i, 3)
-                            fireDir := -1
-                            fireTag := "BRT ▼"
-                            fireLvl := clN.get(i) + " " + str.tostring(math.round(f_poolScore(i, 1), 1)) + "★ @ " + str.tostring(p, format.mintick)
-                            fireRank := clR.get(i)
-                            mrE := be2
-                            mrS := bs2
-                            mrT := bt2
-                            mrR := br2
-                            dynTag := "BRT"
-                        else
-                            evNoTrade := true
-                            evNoTradeTxt := "EVT=NOTRADE|reason=room|play=BRT|side=short|level=" + clN.get(i)
-    // ── day-type play matrix (opt-in; OFF = untouched) ───────────────────
-    // Strong trend: bench counter-trend reversals, bench counter-trend
-    // break-retest/APP. Balance: bench break-retest and APP. TRANSITION:
-    // bench nothing. With-trend reversal exception: rank ≥ 8 + fresh stamp
-    // ≥ 70 rides anyway.
-    bool benched = false
-    if dtGateMode != "OFF" and fireDir != 0
-        string firePlay = str.replace(str.replace(fireTag, " ▲", ""), " ▼", "")
-        bool longSide = fireDir == 1
-        bool trendUp = dtState == "TREND▲"
-        bool trendDn = dtState == "TREND▼"
-        bool withTrend = (trendUp and longSide) or (trendDn and not longSide)
-        if trendUp or trendDn
-            if firePlay == "MR"
-                benched := true
-                if withTrend and dtTrendMrException and fireRank >= 8 and not na(stLastScore) and stLastScore >= 70 and bar_index - nz(stLastBar, -999) <= 1
-                    benched := false
-            else
-                benched := not withTrend
-        else if dtState == "BALANCE"
-            benched := firePlay == "BRT" or firePlay == "APP"
-    if benched and dtGateMode == "ENFORCE"
-        evBench := true
-        evBenchTxt := "EVT=BENCHED|play=" + str.replace(str.replace(fireTag, " ▲", ""), " ▼", "") + "|side=" + (fireDir == 1 ? "long" : "short") + "|reason=daytype"
-        fireDir := 0
-    bool benchAdv = benched and dtGateMode == "ADVISORY"
-    if benchAdv
-        evBench := true
-        evBenchTxt := "EVT=BENCHED|play=" + str.replace(str.replace(fireTag, " ▲", ""), " ▼", "") + "|side=" + (fireDir == 1 ? "long" : "short") + "|reason=daytype"
-    // signal validity: after validBars the emitted prices are stale (§4)
-    if sigDir != 0 and bar_index - nz(sigBorn, -99999) >= inValidBars
-        sigDir := 0
-    // fire: count, ONE signal label, trade plan lines. 2.7: MR AND IB alert
-    // (limit-ticket pipe format, dynamic construction); APP/BRT detect +
-    // draw silently.
+                    evNoTradeTxt := "EVT=NOTRADE|reason=" + (na(ct) ? "vwapcap" : "room") + "|side=" + (candDir == 1 ? "long" : "short") + "|level=" + poolName.get(bIdx) + "|score=" + str.tostring(math.round(bScore))
+    // fire: count, ONE signal label, ticket, alert, plan lines
     if fireDir != 0
         sigCnt += 1
         lastSigBar := bar_index
-        bool isDynFire = not na(mrE)
-        float pe = isDynFire ? mrE : close
-        float ps = isDynFire ? mrS : pe - fireDir * stopPts
-        float pt = isDynFire ? mrT : pe + fireDir * tgtPts
-        if isDynFire
-            if dynTag == "IB"
-                sigIBUp := fireDir == 1
-                sigIBDn := fireDir == -1
-            else if dynTag == "BRT"
-                sigBRTUp := fireDir == 1
-                sigBRTDn := fireDir == -1
-            else
-                sigMRUp := fireDir == 1
-                sigMRDn := fireDir == -1
-            sigDir := fireDir
-            sigPlay := dynTag
-            sigE := pe
-            sigS := ps
-            sigT := pt
-            sigR := mrR
-            sigBorn := bar_index
-            sigLvlTxt := fireLvl
-            // §8 — one line, pipe-delimited, keyed straight into limit tickets
-            alert("SKULD|" + (fireDir == 1 ? "BUY " : "SELL ") + dynTag + "|" + syminfo.ticker + "|E:" + str.tostring(pe, format.mintick) + "|S:" + str.tostring(ps, format.mintick) + "|T1:" + str.tostring(pt, format.mintick) + "|R:" + str.tostring(mrR, "#.##") + "|LVL:" + fireLvl + "|" + str.format_time(time, "yyyy-MM-dd HH:mm", TZ) + (inCold ? "|COLD HOUR" : ""), alert.freq_once_per_bar_close)
-        else
-            // any newer fire supersedes the HUD signal — the plan lines now
-            // belong to this play, a stale E/S/T1 block would disagree
-            sigDir := 0
-        // one label per signal — play, direction, score. Brand color block,
-        // stays on the chart as the day's signal trail. Details live in the
-        // alert text and the plan lines, not in chart clutter.
-        label.new(time, fireDir == 1 ? low : high, fireTag + (benchAdv ? " BENCH" : ""), xloc = xloc.bar_time, style = fireDir == 1 ? label.style_label_up : label.style_label_down, color = color.new(fireDir == 1 ? colUp : colDn, benchAdv ? 70 : 0), textcolor = fireDir == 1 ? color.black : color.white, size = sigSz, tooltip = fireLvl)
+        sigMRUp := fireDir == 1
+        sigMRDn := fireDir == -1
+        sigDir := fireDir
+        sigE := mrE
+        sigS := mrS
+        sigT := mrT
+        sigT2 := mrT2
+        sigR := mrR
+        sigBorn := bar_index
+        sigLvlTxt := fireLvl
+        sigTgtNm := mrTgtNm
+        // one line, pipe-delimited, keyed straight into limit tickets
+        string stretchTxt = na(absSigma) ? "—" : str.tostring(absSigma, "#.#") + "σ"
+        alert("SKULD|" + (fireDir == 1 ? "BUY MR" : "SELL MR") + "|" + syminfo.ticker + "|E:" + str.tostring(mrE, format.mintick) + "|S:" + str.tostring(mrS, format.mintick) + "|T1:" + str.tostring(mrT, format.mintick) + "|T2:" + (na(mrT2) ? "—" : str.tostring(mrT2, format.mintick)) + "|R:" + str.tostring(mrR, "#.##") + "|ADX:" + str.tostring(adxV, "#.#") + "|STRETCH:" + stretchTxt + "|LVL:" + fireLvl + "|" + str.format_time(time, "yyyy-MM-dd HH:mm", TZ), alert.freq_once_per_bar_close)
+        label.new(time, fireDir == 1 ? low : high, fireDir == 1 ? "MR ▲" : "MR ▼", xloc = xloc.bar_time, style = fireDir == 1 ? label.style_label_up : label.style_label_down, color = color.new(fireDir == 1 ? colUp : colDn, 0), textcolor = fireDir == 1 ? color.black : color.white, size = sigSz, tooltip = fireLvl + " → T1 " + mrTgtNm)
         if showPlan
             if not na(planE)
                 line.delete(planE)
@@ -2403,21 +1397,19 @@ if barstate.isconfirmed and not htfMode
                 line.delete(planT)
             if not na(planRes)
                 label.delete(planRes)
-            planE := line.new(time, pe, time, pe, xloc = xloc.bar_time, color = colText, width = 2)
-            planS := line.new(time, ps, time, ps, xloc = xloc.bar_time, color = colStop, style = line.style_dashed)
-            planT := line.new(time, pt, time, pt, xloc = xloc.bar_time, color = colUp, style = line.style_dotted)
+            planE := line.new(time, mrE, time, mrE, xloc = xloc.bar_time, color = colText, width = 2)
+            planS := line.new(time, mrS, time, mrS, xloc = xloc.bar_time, color = colStop, style = line.style_dashed)
+            planT := line.new(time, mrT, time, mrT, xloc = xloc.bar_time, color = colUp, style = line.style_dotted)
             planDir := fireDir
-            planSp := ps
-            planTp := pt
-            planEp := pe
+            planSp := mrS
+            planTp := mrT
+            planEp := mrE
             planFilled := false
             planOn := true
-    // manage the live plan: extend with price, terminate + stamp outcome on hit
-    // 2.9.1 SIGNAL LIFECYCLE — the ticket is a RESTING LIMIT; track it like
-    // one. Fill first (price returns to E), then SL/TP. Price tags T1 without
-    // ever filling = the move left without you: kill ticket AND HUD signal
-    // instantly (back to WAITING, next levels showing) with a dim RAN stamp.
-    // No fill = no win/loss — unfilled tickets can no longer stamp "TP ✓".
+    // manage the live plan: the ticket is a RESTING LIMIT — track it like
+    // one. Fill first (price returns to E), then SL/TP. Price tags T1
+    // without ever filling = the move left without you: kill ticket AND HUD
+    // signal instantly with a dim RAN stamp. No fill = no win/loss.
     if planOn and fireDir == 0
         line.set_x2(planE, time)
         line.set_x2(planS, time)
@@ -2451,22 +1443,17 @@ if barstate.isconfirmed and not htfMode
                 planOn := false
                 sigDir := 0
 
-// ── PLOTS ──────────────────────────────────────────────────────────────────
+// ── PLOTS ── 8 plot() + 2 alertcondition() = 10 output calls (×2 = 20) ─────
 plot(showVwap and not htfMode ? vwapV : na, "VWAP", color = colVwap, linewidth = 2, style = plot.style_linebr)
 plot(inclTwap and not htfMode ? twapV : na, "TWAP", color = color.new(colVwap, 45), style = plot.style_linebr)
 plot(showVwap and not htfMode ? up1 : na, "+1σ", color = color.new(colBand, 40), style = plot.style_linebr)
 plot(showVwap and not htfMode ? dn1 : na, "-1σ", color = color.new(colBand, 40), style = plot.style_linebr)
 plot(showVwap and showSd2 and not htfMode ? up2 : na, "+2σ", color = color.new(colBand, 15), style = plot.style_linebr)
 plot(showVwap and showSd2 and not htfMode ? dn2 : na, "-2σ", color = color.new(colBand, 15), style = plot.style_linebr)
-plot(showOn and not htfMode and (inRTH or inON) ? onHi : na, "ONH", color = colOn, style = plot.style_linebr)
-plot(showOn and not htfMode and (inRTH or inON) ? onLo : na, "ONL", color = colOn, style = plot.style_linebr)
-plot(not htfMode and inRTH and not na(ibHi) ? ibHi : na, "IBH", color = color.new(colDn, 30), style = plot.style_linebr)
-plot(not htfMode and inRTH and not na(ibLo) ? ibLo : na, "IBL", color = color.new(colDn, 30), style = plot.style_linebr)
+plot(showVwap and showSd3 and not htfMode ? up3 : na, "+3σ", color = color.new(colBand, 55), style = plot.style_linebr)
+plot(showVwap and showSd3 and not htfMode ? dn3 : na, "-3σ", color = color.new(colBand, 55), style = plot.style_linebr)
 
-// signal marks are label.new at fire time now (one clean block per signal) —
-// the six plotshape triangles are gone, and their plot-budget slots with them.
-
-// ── RENDER · DEVELOPING LEVELS (last bar) ──────────────────────────────────
+// ── RENDER · DEVELOPING POC LINES (last bar) ───────────────────────────────
 var array<line> devLn = array.new<line>()
 var array<label> devLb = array.new<label>()
 f_devDraw(float px, string nm, int rank, int t0, color cc, int wd) =>
@@ -2489,54 +1476,11 @@ if barstate.islast
     if not htfMode
         int sessT0 = inRTH ? nT0 : inL ? lT0 : inA ? aT0 : na
         if showDevS
-            f_devDraw(devSPoc, "sPOC", 6, sessT0, colVpPoc, 2)
-            f_devDraw(devSVah, "sVAH", 4, sessT0, colDevVa, 1)
-            f_devDraw(devSVal, "sVAL", 4, sessT0, colDevVa, 1)
+            f_devDraw(devSPoc, "sPOC", 6, sessT0, colDevPoc, 2)
         if showDevD
-            f_devDraw(devDPoc, "dPOC", 8, dT0, colS4, 2)
-            f_devDraw(devDVah, "dVAH", 6, dT0, colS3, 1)
-            f_devDraw(devDVal, "dVAL", 6, dT0, colS3, 1)
+            f_devDraw(devDPoc, "dPOC", 8, dT0, colDevPoc, 2)
 
-// ── RENDER · VOLUME PROFILE HISTOGRAM (last bar) ───────────────────────────
-var array<box> vpBx = array.new<box>()
-if barstate.islast
-    if vpBx.size() > 0
-        for b in vpBx
-            box.delete(b)
-    vpBx.clear()
-    if inVpStyle == "Bars"
-        Prof src = dP
-        int anch = dT0
-        if inVpSrc == "Week" or (inVpSrc == "Auto" and htfMode)
-            src := wP
-            anch := wT0
-        else if inVpSrc == "Session" or (inVpSrc == "Auto" and not htfMode)
-            if inRTH
-                src := nP
-                anch := nT0
-            else if inL
-                src := lP
-                anch := lT0
-            else if inA
-                src := aP
-                anch := aT0
-        [rv, lo, rowH, tot, pocI, uI, dI] = f_rows(src, inVpRows)
-        if tot > 0 and not na(rowH)
-            float mx = array.max(rv)
-            bool rightAnch = inVpAnchor == "Right edge"
-            int xR = time + (inOff - 1) * barMs
-            int xL = na(anch) ? time - inVpWide * barMs : anch
-            for i = 0 to inVpRows - 1
-                float v0 = rv.get(i)
-                if v0 > 0
-                    int wBars = math.max(1, int(math.round(v0 / mx * inVpWide)))
-                    bool inVa = i > dI and i < uI
-                    color cc = i == pocI ? colVpPoc : inVa ? colVpVa : colVpOut
-                    int bx1 = rightAnch ? xR - wBars * barMs : xL
-                    int bx2 = rightAnch ? xR : xL + wBars * barMs
-                    vpBx.push(box.new(bx1, lo + (i + 1) * rowH, bx2, lo + i * rowH, xloc = xloc.bar_time, bgcolor = color.new(cc, inVpTr), border_color = color.new(cc, 100)))
-
-// ── RENDER · CLUSTER MAP (last bar) ────────────────────────────────────────
+// ── RENDER · LEVEL MAP (last bar) ──────────────────────────────────────────
 var array<line> clLn = array.new<line>()
 var array<label> clLb = array.new<label>()
 if barstate.islast
@@ -2549,7 +1493,7 @@ if barstate.islast
             label.delete(lb)
     clLb.clear()
     if showLvls and htfMode and clP.size() > 0
-        // STRUCTURE mode: the full ranked map, unchanged since 2.5
+        // STRUCTURE mode: the full ranked map
         array<float> dst = array.new<float>()
         for i = 0 to clP.size() - 1
             dst.push(math.abs(close - clP.get(i)))
@@ -2564,16 +1508,14 @@ if barstate.islast
                 color cc = f_starCol(stx)
                 int wd = clS.get(i) == 3 ? inWidW : clS.get(i) == 2 ? inWidD : inWidS
                 float y = clP.get(i)
-                clLn.push(line.new(math.max(bar_index - 30, 0), y, bar_index + inOff, y, color = cc, style = prSty, width = wd))
-                // ◆ = cluster sits inside a live imbalance zone (rank bonus active)
-                string zTag = f_inZone(y) != 0 ? " ◆" : ""
-                string txt = f_scoreTxt(clR.get(i)) + zTag + " " + clN.get(i) + (showPx ? "  " + str.tostring(y, format.mintick) : "") + " · " + str.tostring(d, format.mintick)
-                clLb.push(label.new(bar_index + inOff, y, txt, style = label.style_label_left, color = color.new(color.black, 100), textcolor = cc, size = size.small))
+                clLn.push(line.new(time - 30 * barMs, y, time + inOff * barMs, y, xloc = xloc.bar_time, color = cc, style = prSty, width = wd))
+                string txt = f_scoreTxt(clR.get(i)) + " " + clN.get(i) + (showPx ? "  " + str.tostring(y, format.mintick) : "") + " · " + str.tostring(d, format.mintick)
+                clLb.push(label.new(time + inOff * barMs, y, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.black, 100), textcolor = cc, size = size.small))
     if showLvls and not htfMode and poolP.size() > 0
-        // EXECUTION mode (2.6): ONLY the levels in play — the nearest K
-        // qualifying items above and K below price, where qualifying =
-        // EffScore for the side price would arrive from ≥ the regime's
-        // display floor. Spent levels decay off this chart by design.
+        // EXECUTION mode: ONLY the levels in play — the nearest K qualifying
+        // items above and K below price, where qualifying = EffScore for the
+        // side price would arrive from ≥ the regime's display floor. Spent
+        // levels decay off this chart by design.
         array<float> exDst = array.new<float>()
         array<int> exIdx = array.new<int>()
         array<int> exDir = array.new<int>()
@@ -2611,9 +1553,9 @@ if barstate.islast
                         for m = aR to aR + poolMemN.get(i) - 1
                             mScMax := math.max(mScMax, pmScope.get(m))
                     int wd = mScMax == 3 ? inWidW : mScMax == 2 ? inWidD : inWidS
-                    clLn.push(line.new(math.max(bar_index - 30, 0), y, bar_index + inOff, y, color = cc, style = prSty, width = wd))
+                    clLn.push(line.new(time - 30 * barMs, y, time + inOff * barMs, y, xloc = xloc.bar_time, color = cc, style = prSty, width = wd))
                     // record = the strongest member's H/B history for the
-                    // approach direction; ◆ = live imbalance-zone bonus
+                    // approach direction
                     string recKey = ""
                     float recRank = -1.0
                     int recScope = 1
@@ -2623,126 +1565,37 @@ if barstate.islast
                                 recRank := pmRank.get(m)
                                 recKey := pmKey.get(m)
                                 recScope := pmScope.get(m)
-                    string zTag = f_inZone(y) != 0 ? " ◆" : ""
-                    string txt = poolName.get(i) + zTag + (showPx ? " " + str.tostring(y, format.mintick) : "") + " · " + str.tostring(math.round(math.abs(y - close) / syminfo.mintick)) + "t · " + str.tostring(math.round(eff, 1)) + "★ · " + f_recordTxt(recKey, dirA, recScope)
-                    clLb.push(label.new(bar_index + inOff, y, txt, style = label.style_label_left, color = color.new(color.black, 100), textcolor = cc, size = size.small))
+                    string txt = poolName.get(i) + (showPx ? " " + str.tostring(y, format.mintick) : "") + " · " + str.tostring(math.round(math.abs(y - close) / syminfo.mintick)) + "t · " + str.tostring(math.round(eff, 1)) + "★ · " + f_recordTxt(recKey, dirA, recScope)
+                    clLb.push(label.new(time + inOff * barMs, y, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.black, 100), textcolor = cc, size = size.small))
 
-// ── DASHBOARD ──────────────────────────────────────────────────────────────
-// Position is user-picked (he parks it away from the chart he's running).
+// ── DEBUG HUD (4 rows: REGIME · ADX · STRETCH · GATES) ─────────────────────
 f_dashPos() =>
     inDashPos == "Top left" ? position.top_left : inDashPos == "Bottom right" ? position.bottom_right : inDashPos == "Bottom left" ? position.bottom_left : position.top_right
 
-// 2.6: the old 13-row system panel is DIAGNOSTICS now (showDebugHud) with a
-// REGIME row appended; the default HUD below it is trade-entry info only.
-var table dash = showDash and showDebugHud ? table.new(f_dashPos(), 2, 14, bgcolor = color.new(#0d0d10, 8), border_width = 1, border_color = color.new(#673ab7, 55)) : table(na)
+var table dash = showDash and showDebugHud ? table.new(f_dashPos(), 2, 4, bgcolor = color.new(#0d0d10, 8), border_width = 1, border_color = color.new(#673ab7, 55)) : table(na)
 if showDash and showDebugHud and barstate.islast
-    // brand states: neon green good · amber forming · red blocked/over ·
-    // cyan info · purple structure · gray off
     color okC   = #00ff00
     color offC  = #787b86
     color warnC = #ffb300
     color badC  = #ef5350
     color infC  = #00bcd4
-    color strC  = #673ab7
-    f_row(dash, 0, "MODE", htfMode ? "STRUCTURE ≥" + inModeTf : "EXECUTION <" + inModeTf, htfMode ? strC : okC)
-    f_row(dash, 1, "TUNE", (isES ? "ES" : "NQ") + " · dATR " + (na(dAtr) ? "—" : str.tostring(dAtr, format.mintick)) + " · W " + str.tostring(clustWv, format.mintick) + " · " + f_tierName(), offC)
-    f_row(dash, 2, "SESSION", sessNow, inAnySess ? okC : offC)
-    // the market-condition read: which playbook is live
-    string dtTxt = not dtOn ? "—" : dtState + " · T" + (dtT >= 0 ? "+" : "") + str.tostring(dtT) + (dtGateOK ? "" : " · thin")
-    color dtCol = not dtOn ? offC : dtState == "TREND▲" ? okC : dtState == "TREND▼" ? badC : dtState == "BALANCE" ? infC : offC
-    f_row(dash, 3, "DAY TYPE", dtTxt, dtCol)
-    string ibTxt = htfMode ? "—" : ibDone and not na(ibHi) ? str.tostring(ibHi - ibLo, format.mintick) + (firedUp > 0 ? " ▲" : firedDn > 0 ? " ▼" : "") : inIBw ? "forming" : "waiting"
-    f_row(dash, 4, "IB", ibTxt, ibDone ? okC : inIBw ? warnC : offC)
-    // nearest = clusters AND developing levels — the live map in one row
-    string nearTxt = "building"
-    float bd = 1.0e18
-    string bn = ""
-    int br = 0
-    int nearClIdx = -1
-    if clP.size() > 0
-        for i = 0 to clP.size() - 1
-            float d = math.abs(close - clP.get(i))
-            if d < bd
-                bd := d
-                bn := clN.get(i)
-                br := int(clR.get(i))
-                nearClIdx := i
-    if not na(devSPoc) and math.abs(close - devSPoc) < bd
-        bd := math.abs(close - devSPoc)
-        bn := "sPOC"
-        br := 6
-        nearClIdx := -1
-    if not na(devSVah) and math.abs(close - devSVah) < bd
-        bd := math.abs(close - devSVah)
-        bn := "sVAH"
-        br := 4
-        nearClIdx := -1
-    if not na(devSVal) and math.abs(close - devSVal) < bd
-        bd := math.abs(close - devSVal)
-        bn := "sVAL"
-        br := 4
-        nearClIdx := -1
-    if not na(devDPoc) and math.abs(close - devDPoc) < bd
-        bd := math.abs(close - devDPoc)
-        bn := "dPOC"
-        br := 8
-        nearClIdx := -1
-    if not na(devDVah) and math.abs(close - devDVah) < bd
-        bd := math.abs(close - devDVah)
-        bn := "dVAH"
-        br := 6
-        nearClIdx := -1
-    if not na(devDVal) and math.abs(close - devDVal) < bd
-        bd := math.abs(close - devDVal)
-        bn := "dVAL"
-        br := 6
-        nearClIdx := -1
-    // approach read — its own row, or swapped into NEAREST on request
-    bool apActive = apGrade != "" and not htfMode
-    string apTxt = apActive ? (apDir == 1 ? "▲ " : "▼ ") + apGrade + " → " + f_starTxt(f_stars(apLvlR)) + " " + str.tostring(apLvlP, format.mintick) + " · " + str.tostring(math.round(math.abs(apLvlP - close) / syminfo.mintick)) + "t" : "—"
-    if bn != ""
-        // touch counter rides the nearest cluster: ·T2 = second touch today
-        string tchTag = nearClIdx >= 0 and nearClIdx < clTch.size() and clTch.get(nearClIdx) > 1 ? " ·T" + str.tostring(clTch.get(nearClIdx)) : ""
-        nearTxt := f_scoreTxt(br) + " " + bn + " · " + str.tostring(bd, format.mintick) + tchTag
-    f_row(dash, 5, "NEAREST", apReplaceNearest and apActive ? apTxt : nearTxt, infC)
-    string sPocTxt = na(devSPoc) ? "building" : str.tostring(devSPoc, format.mintick) + " · " + str.tostring(math.abs(close - devSPoc), format.mintick)
-    f_row(dash, 6, "sPOC", sPocTxt, na(devSPoc) ? offC : close > devSPoc ? okC : badC)
-    // live imbalance zones + nearest zone edge — the resting-interest row
-    string imbTxt = "—"
-    if enImb and imbLo.size() > 0
-        int zB = 0
-        int zS = 0
-        float zNear = 1.0e18
-        for i = 0 to imbLo.size() - 1
-            if imbDir.get(i) == 1
-                zB += 1
-            else
-                zS += 1
-            float dEdge = close > imbHi.get(i) ? close - imbHi.get(i) : close < imbLo.get(i) ? imbLo.get(i) - close : 0.0
-            zNear := math.min(zNear, dEdge)
-        imbTxt := "▲" + str.tostring(zB) + " · ▼" + str.tostring(zS) + " · " + (zNear == 0 ? "INSIDE" : str.tostring(zNear, format.mintick))
-    f_row(dash, 7, "IMB", imbTxt, not enImb or imbLo.size() == 0 ? offC : f_inZone(close) != 0 ? warnC : infC)
-    // how price is arriving at the next ranked cluster
-    f_row(dash, 8, "APPR", apReplaceNearest ? "—" : apTxt, not apActive ? offC : apGrade == "DRIVE" ? badC : apGrade == "GRIND" ? okC : warnC)
-    // last touch stamp: score · level · age
-    string stTxt = na(stLastScore) or htfMode ? "—" : str.tostring(math.round(stLastScore)) + "% " + stLastBand + " · " + stLastName + " · " + str.tostring(bar_index - stLastBar) + "b ago"
-    f_row(dash, 9, "REACT", stTxt, na(stLastScore) or htfMode ? offC : stLastScore >= 70 ? okC : stLastScore >= 40 ? warnC : badC)
-    // the hour read — where the ledger says the money lives vs bleeds
-    string ckTxt = inPrime ? "PRIME" : inCold ? "COLD" : "NEUTRAL"
-    f_row(dash, 10, "CLOCK", ckTxt, inPrime ? okC : inCold ? badC : offC)
-    f_row(dash, 11, "SIGNALS", str.tostring(sigCnt) + "/" + str.tostring(inMaxSig) + (sigCnt >= inMaxSig ? (inHardCap ? " DONE" : " ≥PLAN") : ""), sigCnt >= inMaxSig ? badC : okC)
-    string fTxt = htfMode ? "map only" : useLunch and inLunch ? "LUNCH" : not inRTH ? "OFF-SESSION" : "CLEAR"
-    f_row(dash, 12, "FILTER", fTxt, fTxt == "CLEAR" ? okC : fTxt == "map only" ? strC : badC)
     string rgTxt = f_tierName() + (na(atrPct) ? "" : " · " + str.tostring(math.round(atrPct)) + "pct") + (na(dAtr) ? "" : " · dATR " + str.tostring(dAtr, format.mintick)) + (useVix and not na(vixD) ? " · VIX " + str.tostring(vixD, "#.#") : "")
-    f_row(dash, 13, "REGIME", rgTxt, tier >= 3 ? badC : tier == 2 ? warnC : tier == 0 ? infC : okC)
+    f_row(dash, 0, "REGIME", rgTxt, tier >= 3 ? badC : tier == 2 ? warnC : tier == 0 ? infC : okC)
+    string adxTxt = (na(adxDisp) ? "—" : str.tostring(adxDisp, "#.#")) + " · " + (regDisp == 2 ? "FULL MR" : regDisp == 1 ? "EXTREME-ONLY" : regDisp == 0 ? "NO MR" : "—")
+    f_row(dash, 1, "ADX", adxTxt, regDisp == 2 ? okC : regDisp == 1 ? warnC : regDisp == 0 ? badC : offC)
+    float vAbs = not na(vwapV) ? math.abs(close - vwapV) : na
+    string strTxt = (na(sigmaDisp) ? "—" : str.tostring(sigmaDisp, "#.##") + "σ") + (na(vAbs) or na(atr14) or atr14 <= 0 ? "" : " · " + str.tostring(vAbs / atr14, "#.##") + "×A14")
+    f_row(dash, 2, "STRETCH", strTxt, stretchDispOK ? okC : offC)
+    int cdLeft = math.max(0, inCd - (bar_index - lastSigBar))
+    string gTxt = sessNow + " · cd " + str.tostring(cdLeft) + " · " + str.tostring(sigCnt) + "/" + str.tostring(inMaxSig) + " · rsi " + (na(rsiDisp) ? "—" : str.tostring(math.round(rsiDisp))) + " · lvl " + (lvlDispOK ? "✓" : "–")
+    f_row(dash, 3, "GATES", gTxt, inAnySess ? infC : offC)
 
-// ── HUD (2.8 · deck spec) — trade-entry information ONLY ───────────────────
-// Header row: SKULD · SYMBOL TF | state (WAITING amber · SIGNAL side color ·
-// STRUCTURE purple). WAITING: aligned columns — side+name · price · dist ·
-// score — ▲ short zone in purple, ▼ long zone in green, ROOM row carries the
-// available ticks per side. SIGNAL: boxed side block, labeled E/S/T1/R grid
-// (S red · T1 green · R cyan), VALID as a clock. Table is deleted + rebuilt
-// on the last bar so merges/stale cells can never leak between states.
+// ── HUD (deck spec) — trade-entry information ONLY ─────────────────────────
+// Header row: SKULD · SYMBOL TF | state. WAITING: nearest qualifying level
+// each side + ROOM row + GATES row (the edge's four conditions, colored).
+// SIGNAL: boxed side block, E/S/T1/R grid, FROM row, T2 row when the target
+// stood off an intermediate level, RISK row, VALID clock. Table is deleted +
+// rebuilt on the last bar so stale cells never leak between states.
 f_shortNm(string nm) =>
     str.length(nm) > 16 ? str.substring(nm, 0, 15) + "…" : nm
 f_tfTxt() =>
@@ -2751,7 +1604,7 @@ var table hud = table(na)
 if showDash and not showDebugHud and barstate.islast
     if not na(hud)
         table.delete(hud)
-    hud := table.new(f_dashPos(), 4, 6, bgcolor = color.new(#0d0d10, 6), frame_width = 1, frame_color = color.new(#673ab7, 45))
+    hud := table.new(f_dashPos(), 4, 8, bgcolor = color.new(#0d0d10, 6), frame_width = 1, frame_color = color.new(#673ab7, 45))
     color hOk = #00ff00
     color hBad = #ef5350
     color hDim = #787b86
@@ -2772,25 +1625,43 @@ if showDash and not showDebugHud and barstate.islast
         int vSecs = leftBars * tfSec
         string vTxt = str.tostring(math.floor(vSecs / 60)) + ":" + (vSecs % 60 < 10 ? "0" : "") + str.tostring(vSecs % 60)
         color sc = sigDir == 1 ? hOk : colDn
-        table.cell(hud, 0, 1, (sigDir == 1 ? "BUY " : "SELL ") + sigPlay, text_color = sigDir == 1 ? color.black : color.white, text_size = size.huge, bgcolor = color.new(sc, 20))
+        table.cell(hud, 0, 1, (sigDir == 1 ? "BUY" : "SELL") + " MR", text_color = sigDir == 1 ? color.black : color.white, text_size = size.huge, bgcolor = color.new(sc, 20))
         table.merge_cells(hud, 0, 1, 3, 1)
         table.cell(hud, 0, 2, "E", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)
         table.cell(hud, 1, 2, str.tostring(sigE, format.mintick), text_color = #ffffff, text_size = size.large, text_halign = text.align_right, bgcolor = hCard)
         table.cell(hud, 2, 2, "S", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)
         table.cell(hud, 3, 2, str.tostring(sigS, format.mintick), text_color = hBad, text_size = size.large, text_halign = text.align_right, bgcolor = hCard)
         table.cell(hud, 0, 3, "T1", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)
-        table.cell(hud, 1, 3, str.tostring(sigT, format.mintick), text_color = hOk, text_size = size.large, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 1, 3, str.tostring(sigT, format.mintick), text_color = hOk, text_size = size.large, text_halign = text.align_right, bgcolor = hCard, tooltip = "T1 at " + sigTgtNm)
         table.cell(hud, 2, 3, "R", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)
         table.cell(hud, 3, 3, str.tostring(sigR, "#.#"), text_color = hCyn, text_size = size.large, text_halign = text.align_right, bgcolor = hCard)
-        // FROM — the level that produced this signal (2.9.3)
+        // FROM — the level that produced this signal
         string fromTxt = sigLvlTxt
         if str.length(fromTxt) > 42
             fromTxt := str.substring(fromTxt, 0, 41) + "…"
         table.cell(hud, 0, 4, "FROM " + fromTxt, text_color = hGold, text_size = size.small, text_halign = text.align_left, bgcolor = hCard, tooltip = sigLvlTxt)
         table.merge_cells(hud, 0, 4, 3, 4)
-        table.cell(hud, 0, 5, "VALID", text_color = hDim, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
-        table.cell(hud, 1, 5, vTxt, text_color = leftBars <= 2 ? hAmb : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
-        table.merge_cells(hud, 1, 5, 3, 5)
+        // T2 — VWAP, when T1 stood off an intermediate working level
+        if not na(sigT2)
+            table.cell(hud, 0, 5, "T2 VWAP " + str.tostring(sigT2, format.mintick), text_color = hCyn, text_size = size.small, text_halign = text.align_left, bgcolor = hCard, tooltip = "T1 stands off " + sigTgtNm + " — VWAP is the runner target.")
+            table.merge_cells(hud, 0, 5, 3, 5)
+        // RISK — advisory sizing only
+        float riskDlr = acctSize * riskPct / 100.0
+        int stopTk = na(sigE) or na(sigS) ? 0 : int(math.round(math.abs(sigE - sigS) / syminfo.mintick))
+        string riskTxt = "—"
+        if stopTk > 0
+            float perCt = stopTk * syminfo.mintick * syminfo.pointvalue
+            if syminfo.pointvalue != 1.0 and perCt > 0
+                int nCt = int(math.floor(riskDlr / perCt))
+                riskTxt := str.tostring(riskPct, "#.##") + "% = $" + str.tostring(riskDlr, "#") + " → " + str.tostring(nCt) + " ct · stop " + str.tostring(stopTk) + "t"
+            else
+                riskTxt := str.tostring(riskPct, "#.##") + "% = $" + str.tostring(riskDlr, "#") + " · stop " + str.tostring(stopTk) + "t"
+        table.cell(hud, 0, 6, "RISK", text_color = hDim, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
+        table.cell(hud, 1, 6, riskTxt, text_color = hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard, tooltip = "Advisory only — floor(risk$ ÷ (stop ticks × tick value)). CFD/forex (pointvalue 1): ticks only.")
+        table.merge_cells(hud, 1, 6, 3, 6)
+        table.cell(hud, 0, 7, "VALID", text_color = hDim, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
+        table.cell(hud, 1, 7, vTxt, text_color = leftBars <= 2 ? hAmb : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
+        table.merge_cells(hud, 1, 7, 3, 7)
     else if not htfMode
         // ── WAITING ── nearest qualifying level each side
         int upIdx = -1
@@ -2814,23 +1685,23 @@ if showDash and not showDebugHud and barstate.islast
                         dnD := close - y
                         dnIdx := i
                         dnEff := e2
-        // ROOM: would §4 pass right now — long at the ▼ level, short at ▲ —
-        // and how many ticks of travel the ticket would get.
+        // ROOM: would the ticket pass right now — long at the ▼ level,
+        // short at ▲ — and how many ticks of travel it would get.
         bool roomL = false
         bool roomS = false
-        int roomLt = 0
-        int roomSt = 0
+        int roomLt = -1
+        int roomSt = -1
         if not na(dAtr)
             if dnIdx >= 0
-                [rlE, rlS, rlT, rlR, rlOk] = f_construct(dnIdx, 1, dAtr)
+                [rlE, rlS, rlT, rlT2, rlR, rlOk, rlNm] = f_construct3(dnIdx, 1, dAtr, loW, vwapV)
                 roomL := rlOk
                 roomLt := na(rlT) ? -1 : int(math.round((rlT - rlE) / syminfo.mintick))
             if upIdx >= 0
-                [rsE, rsS, rsT, rsR, rsOk] = f_construct(upIdx, -1, dAtr)
+                [rsE, rsS, rsT, rsT2, rsR, rsOk, rsNm] = f_construct3(upIdx, -1, dAtr, hiW, vwapV)
                 roomS := rsOk
                 roomSt := na(rsT) ? -1 : int(math.round((rsE - rsT) / syminfo.mintick))
         // ▲ = short zone (purple) · ▼ = long zone (green), deck columns:
-        // side+name · price · +dist · score
+        // side+name · price · ±dist · score
         table.cell(hud, 0, 1, upIdx < 0 ? "▲ —" : "▲ " + f_shortNm(poolName.get(upIdx)), text_color = upIdx < 0 ? hDim : colDn, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard, tooltip = upIdx < 0 ? "" : poolName.get(upIdx))
         table.cell(hud, 1, 1, upIdx < 0 ? "" : str.tostring(poolP.get(upIdx), format.mintick), text_color = colDn, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
         table.cell(hud, 2, 1, upIdx < 0 ? "" : "+" + str.tostring(math.round(upD / syminfo.mintick)) + "t", text_color = hDim, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
@@ -2840,9 +1711,22 @@ if showDash and not showDebugHud and barstate.islast
         table.cell(hud, 2, 2, dnIdx < 0 ? "" : "-" + str.tostring(math.round(dnD / syminfo.mintick)) + "t", text_color = hDim, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
         table.cell(hud, 3, 2, dnIdx < 0 ? "" : str.tostring(math.round(dnEff, 1)) + "★", text_color = hGold, text_size = size.normal, text_halign = text.align_right, bgcolor = hCard)
         table.cell(hud, 0, 3, "ROOM", text_color = hCyn, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
-        table.cell(hud, 1, 3, dnIdx < 0 ? "L —" : "L " + (roomL ? "OK·" : "✗·") + (roomLt < 0 ? "no lvl" : str.tostring(roomLt) + "t"), text_color = dnIdx < 0 ? hDim : roomL ? hOk : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
-        table.cell(hud, 2, 3, upIdx < 0 ? "S —" : "S " + (roomS ? "OK·" : "✗·") + (roomSt < 0 ? "no lvl" : str.tostring(roomSt) + "t"), text_color = upIdx < 0 ? hDim : roomS ? hOk : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 1, 3, dnIdx < 0 ? "L —" : "L " + (roomL ? "OK·" : "✗·") + (roomLt < 0 ? "no tgt" : str.tostring(roomLt) + "t"), text_color = dnIdx < 0 ? hDim : roomL ? hOk : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
+        table.cell(hud, 2, 3, upIdx < 0 ? "S —" : "S " + (roomS ? "OK·" : "✗·") + (roomSt < 0 ? "no tgt" : str.tostring(roomSt) + "t"), text_color = upIdx < 0 ? hDim : roomS ? hOk : hDim, text_size = size.small, text_halign = text.align_right, bgcolor = hCard)
         table.cell(hud, 3, 3, "", text_color = hDim, text_size = size.small, bgcolor = hCard)
+        // GATES — the edge's four conditions, so the missing one is obvious
+        string g1 = "ADX " + (na(adxDisp) ? "—" : str.tostring(math.round(adxDisp))) + " " + (regDisp == 2 ? "FULL" : regDisp == 1 ? "EXTR" : regDisp == 0 ? "NO MR" : "—")
+        color g1c = regDisp == 2 ? hOk : regDisp == 1 ? hAmb : regDisp == 0 ? hBad : hDim
+        string g2 = "STR " + (na(sigmaDisp) ? "—" : str.tostring(sigmaDisp, "#.#") + "σ")
+        color g2c = stretchDispOK ? hOk : hDim
+        string g3 = "RSI " + (na(rsiDisp) ? "—" : str.tostring(math.round(rsiDisp)))
+        color g3c = rsiDispOK ? hOk : hDim
+        string g4 = "LVL " + (lvlDispOK ? "✓" : "–")
+        color g4c = lvlDispOK ? hOk : hDim
+        table.cell(hud, 0, 4, g1, text_color = g1c, text_size = size.tiny, text_halign = text.align_left, bgcolor = hCard, tooltip = "Regime: ADX < " + str.tostring(adxGreen, "#") + " FULL · < " + str.tostring(adxAmber, "#") + " EXTREME-ONLY · else NO MR")
+        table.cell(hud, 1, 4, g2, text_color = g2c, text_size = size.tiny, text_halign = text.align_right, bgcolor = hCard, tooltip = "Stretch: ≥ " + str.tostring(stretchSigmaMin, "#.#") + "σ from VWAP or ≥ " + str.tostring(stretchRangeMult, "#.##") + "×ATR14")
+        table.cell(hud, 2, 4, g3, text_color = g3c, text_size = size.tiny, text_halign = text.align_right, bgcolor = hCard, tooltip = "RSI(" + str.tostring(rsiLen) + ") trigger for the stretch side, 2-bar window")
+        table.cell(hud, 3, 4, g4, text_color = g4c, text_size = size.tiny, text_halign = text.align_right, bgcolor = hCard, tooltip = "Price at a pool level whose EffScore ≥ the regime trade floor")
     else
         // ── STRUCTURE ──
         table.cell(hud, 0, 1, "map only — no signals", text_color = hDim, text_size = size.normal, text_halign = text.align_left, bgcolor = hCard)
@@ -2850,30 +1734,12 @@ if showDash and not showDebugHud and barstate.islast
         table.cell(hud, 0, 2, f_tierName() + (na(atrPct) ? "" : " · ATR " + str.tostring(math.round(atrPct)) + "pct"), text_color = hDim, text_size = size.small, text_halign = text.align_left, bgcolor = hCard)
         table.merge_cells(hud, 0, 2, 3, 2)
 
-// ── LEDGER FEED — the journal's data stream ─────────────────────────────────
-if barstate.isconfirmed and feedAlerts
-    if evTouch and feedTouch
-        alert(evTouchTxt, alert.freq_once_per_bar_close)
-    if evStamp and feedStamp
-        alert(evStampTxt, alert.freq_once_per_bar_close)
-    if evDayType and feedDayType
-        alert(evDayTypeTxt, alert.freq_once_per_bar_close)
-    if evAppr and feedAppr
-        alert(evApprTxt, alert.freq_once_per_bar_close)
-    if evBench and feedBench
-        alert(evBenchTxt, alert.freq_once_per_bar_close)
-    if evNoTrade
-        alert(evNoTradeTxt, alert.freq_once_per_bar_close)
+// ── LEDGER FEED — NOTRADE only since 3.0, opt-in ───────────────────────────
+if barstate.isconfirmed and feedNoTrade and evNoTrade
+    alert(evNoTradeTxt, alert.freq_once_per_bar_close)
 
-// ── ALERTS — FOUR alertconditions since 2.7: MR + IB, both sides. The
-// dynamic payload (E/S/TP1/R/level/score/time) rides the alert() call fired
-// at signal time; arm ONE alert with "Any alert() function call" to receive it.
-alertcondition(sigMRUp, "SKULD BUY MR", "SKULD BUY MR — pipe-delimited E/S/TP1/R in the alert() message")
-alertcondition(sigMRDn, "SKULD SELL MR", "SKULD SELL MR — pipe-delimited E/S/TP1/R in the alert() message")
-alertcondition(sigIBUp, "SKULD BUY IB", "SKULD BUY IB — pipe-delimited E/S/TP1/R in the alert() message")
-alertcondition(sigIBDn, "SKULD SELL IB", "SKULD SELL IB — pipe-delimited E/S/TP1/R in the alert() message")
-alertcondition(sigBRTUp, "SKULD BUY BRT", "SKULD BUY BRT — pipe-delimited E/S/TP1/R in the alert() message")
-alertcondition(sigBRTDn, "SKULD SELL BRT", "SKULD SELL BRT — pipe-delimited E/S/TP1/R in the alert() message")
-
-// faint day-type wash, OFF by default
-bgcolor(dtTint and dtOn and not htfMode ? (dtState == "TREND▲" ? color.new(colUp, 97) : dtState == "TREND▼" ? color.new(colStop, 97) : na) : na, title = "Day type tint")
+// ── ALERTS — TWO alertconditions. The dynamic payload (E/S/T1/T2/R/ADX/
+// STRETCH/LVL/time) rides the alert() call fired at signal time; arm ONE
+// alert with "Any alert() function call" to receive it.
+alertcondition(sigMRUp, "SKULD BUY MR", "SKULD BUY MR — pipe-delimited E/S/T1/T2/R in the alert() message")
+alertcondition(sigMRDn, "SKULD SELL MR", "SKULD SELL MR — pipe-delimited E/S/T1/T2/R in the alert() message")

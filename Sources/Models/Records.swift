@@ -83,7 +83,7 @@ struct EntryRecord: Codable, Identifiable, Equatable, FetchableRecord, Persistab
     var lookingFor: String?
     var wantToSee: String?
     var action: String?              // wait/enter/exit/skip/chop
-    var playType: String?            // IB/MR/BRT
+    var playType: String?            // MR/OFF (legacy rows: IB/BRT/APP)
     var levelId: String?
     var mentorReply: String?
     var mentorClaudeSessionId: String?
@@ -99,7 +99,7 @@ struct TradeRecord: Codable, Identifiable, Equatable, FetchableRecord, Persistab
 
     var id: String
     var entryId: String
-    var playType: String             // IB/MR/BRT
+    var playType: String             // MR/OFF (legacy rows: IB/BRT/APP)
     var levelId: String?
     var contracts: Int
     var entryPrice: Double?
@@ -219,9 +219,13 @@ enum EntryAction: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// ONE edge (SKULD 3.0): session VWAP mean reversion. MR is the play;
+/// OFF is the honest tag for anything taken outside it. Old DB rows may
+/// still carry 'IB'/'BRT'/'APP' strings — display sites must tolerate a
+/// failed `PlayType(rawValue:)` and show those as OFF.
 enum PlayType: String, CaseIterable, Identifiable {
-    case IB, MR, BRT, APP
-    /// Honest tag for trades taken outside every defined play — keeps the
+    case MR
+    /// Honest tag for trades taken outside the edge — keeps the
     /// play-type win-rate table truthful instead of polluting MR's row.
     case OFF
     var id: String { rawValue }

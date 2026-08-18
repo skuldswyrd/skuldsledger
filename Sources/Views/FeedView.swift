@@ -253,17 +253,25 @@ struct ComposerView: View {
     @State private var chopHighText = ""
     @State private var chopLowText = ""
     @State private var chopCrossingsText = ""
+    // EDGE CHECK strip (pre-trade GO/WAIT/NO)
+    @State private var adxText = ""
+    @State private var stretchText = ""
+    @State private var rsiText = ""
+    @State private var levelScoreText = ""
+    @State private var edgeLong = true
     @FocusState private var captionFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            edgeCheckStrip
+                .padding(.top, 10)
+
             TextField("What are you seeing?", text: $comment, axis: .vertical)
                 .lineLimit(1...5)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
                 .foregroundStyle(Theme.text)
                 .focused($captionFocused)
-                .padding(.top, 10)
 
             attachedPreview
             spareShotStrip
@@ -333,6 +341,77 @@ struct ComposerView: View {
         if !instrumentManuallySet {
             instrument = url.flatMap { Instrument.detect(fromFilename: $0.lastPathComponent) }
         }
+    }
+
+    // MARK: EDGE CHECK strip (pre-trade GO/WAIT/NO)
+
+    private var edgeCheckStrip: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("EDGE CHECK")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Theme.textDim)
+                    .kerning(1.0)
+                edgeField("ADX", text: $adxText)
+                edgeField("σ", text: $stretchText)
+                edgeField("RSI", text: $rsiText)
+                edgeField("LVL", text: $levelScoreText)
+                SelectChip(text: "LONG", color: Theme.green, selected: edgeLong) { edgeLong = true }
+                SelectChip(text: "SHORT", color: Theme.purple, selected: !edgeLong) { edgeLong = false }
+                Spacer(minLength: 4)
+                if store.preCheckBusy {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Check") { runEdgeCheck() }
+                        .buttonStyle(PillButtonStyle(color: Theme.cyan))
+                        .disabled(!store.mentorAvailable)
+                        .opacity(store.mentorAvailable ? 1 : 0.4)
+                        .help("Mentor verdict: GO / WAIT / NO against the one edge")
+                }
+            }
+            if let reply = store.preCheckReply, !reply.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("MENTOR · PRE-TRADE")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Theme.purple)
+                    Text(reply)
+                        .font(.system(size: 12))
+                        .foregroundStyle(verdictColor(reply))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func edgeField(_ label: String, text: Binding<String>) -> some View {
+        TextField(label, text: text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(Theme.text)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Theme.inset))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.cardBorder, lineWidth: 1))
+            .frame(width: 52)
+    }
+
+    /// GO green / WAIT amber / NO red off the reply's leading word.
+    private func verdictColor(_ reply: String) -> Color {
+        let head = reply.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if head.hasPrefix("GO") { return Theme.green }
+        if head.hasPrefix("WAIT") { return Theme.amber }
+        if head.hasPrefix("NO") { return Theme.red }
+        return Theme.textDim
+    }
+
+    private func runEdgeCheck() {
+        store.preTradeCheck(
+            adx: parseDouble(adxText),
+            stretchSigma: parseDouble(stretchText),
+            rsi: parseDouble(rsiText),
+            levelName: store.level(id: levelId)?.name,
+            levelScore: parseDouble(levelScoreText),
+            side: edgeLong ? "long" : "short")
     }
 
     // MARK: attached image
@@ -1189,7 +1268,13 @@ struct EditPostSheet: View {
         lookingFor = entry.lookingFor ?? ""
         wantToSee = entry.wantToSee ?? ""
         action = EntryAction(rawValue: entry.action ?? "") ?? .wait
-        playType = PlayType(rawValue: entry.playType ?? "")
+        // Legacy rows may carry retired play strings (IB/BRT/APP) — show
+        // them as OFF (outside the edge) rather than dropping the tag.
+        if let raw = entry.playType, !raw.isEmpty {
+            playType = PlayType(rawValue: raw) ?? .OFF
+        } else {
+            playType = nil
+        }
         levelId = entry.levelId
         instrument = Instrument(rawValue: entry.instrument ?? "")
     }

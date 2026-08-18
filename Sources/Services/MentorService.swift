@@ -85,6 +85,46 @@ final class MentorService {
         return await run(prompt: prompt, resumeSessionId: resumeSessionId)
     }
 
+    // MARK: - Pre-trade edge check (GO / WAIT / NO)
+
+    /// Quick verdict against the one-edge checklist BEFORE the trade. Fresh
+    /// conversation every time (no --resume) — the check must never inherit
+    /// stale context.
+    func preTradeCheck(instrument: String, adx: Double?, stretchSigma: Double?,
+                       rsi: Double?, levelName: String?, levelScore: Double?,
+                       side: String, plan: TradingPlan) async -> Result<MentorResult, MentorError> {
+        let prompt = Self.buildPreTradePrompt(
+            instrument: instrument, adx: adx, stretchSigma: stretchSigma,
+            rsi: rsi, levelName: levelName, levelScore: levelScore,
+            side: side, plan: plan)
+        return await run(prompt: prompt, resumeSessionId: nil)
+    }
+
+    private static func buildPreTradePrompt(instrument: String, adx: Double?,
+                                            stretchSigma: Double?, rsi: Double?,
+                                            levelName: String?, levelScore: Double?,
+                                            side: String, plan: TradingPlan) -> String {
+        var lines: [String] = []
+        lines.append("You are skuld's live trading mentor doing a PRE-TRADE edge check. His ONE edge is session VWAP mean reversion (SKULD 3.0). Checklist: regime ADX(14) < 25 full / 25-30 extreme-only (strict RSI 25/75) / > 30 no trade; stretch from session VWAP >= 1.5 sigma; trigger RSI(7) <= 30 long / >= 70 short; entry AT a SKULD key level with a rejection candle; stop beyond the stretch extreme; target session VWAP (or the first working level before it); risk 0.25-0.75% per trade.")
+        lines.append("")
+        var facts: [String] = ["Instrument: \(instrument)", "Side: \(side.uppercased())"]
+        if let adx { facts.append("ADX(14): \(fmt(adx))") }
+        if let stretchSigma { facts.append("Stretch from session VWAP: \(fmt(stretchSigma)) sigma") }
+        if let rsi { facts.append("RSI(7): \(fmt(rsi))") }
+        if let levelName, !levelName.isEmpty {
+            var levelLine = "Level: \(levelName)"
+            if let levelScore { levelLine += " (score \(fmt(levelScore)))" }
+            facts.append(levelLine)
+        } else if let levelScore {
+            facts.append("Level score: \(fmt(levelScore))")
+        }
+        facts.append("Plan min rank to trade: \(plan.minRankToTrade)")
+        lines.append(contentsOf: facts.map { "- \($0)" })
+        lines.append("")
+        lines.append("Reply with a verdict — GO, WAIT, or NO — as the FIRST word, then one line of reason against the checklist. Missing values count against GO. Max 60 words total. Never use the word \"fade\" — say \"reversal\" or frame by direction.")
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: - Shared run (resume retry + parse)
 
     private func run(prompt: String, resumeSessionId: String?) async -> Result<MentorResult, MentorError> {
@@ -125,11 +165,11 @@ final class MentorService {
 
     // MARK: - Prompts
 
-    /// All-day philosophy (2026-07-22): he trades every session; pace and the
-    /// clock are context, quality is the grade. Injected into BOTH prompts so
-    /// the first read and every thread reply hold the same line.
+    /// ONE-EDGE doctrine (2026-08-18, SKULD 3.0): SESSION VWAP MEAN REVERSION
+    /// is the only play. Injected into BOTH prompts so the first read and
+    /// every thread reply hold the same line.
     private static func philosophyBlock(paceBaseline: Int) -> String {
-        "He trades all sessions, all day. Trade count (baseline \(paceBaseline)/day) and time of day are CONTEXT ONLY — NEVER criticize a trade for count, lunch, overnight, or session choice. Grade ONLY: setup quality (level score, orderflow/footprint context, market structure), direction logic vs the plays (IB/MR/BRT/APP), defined risk (entry/stop/target stated), exit discipline (fixed target; never hold through a destination level). Reserve sharp flags for: no level AND no structure basis, undefined risk, holding through target/level, revenge or euphoria language. Otherwise constructive, specific, short."
+        "He trades ONE edge: session VWAP mean reversion (SKULD 3.0). Trade count (baseline \(paceBaseline)/day), session choice, and the clock are CONTEXT ONLY — NEVER criticize a trade for count, lunch, overnight, or session choice. Grade ONLY: (a) regime — ADX(14) < 25 full trading, 25-30 extreme-only, > 30 no trade; (b) stretch — how far from session VWAP in sigma (needs >= 1.5 sigma or ATR-equivalent); (c) trigger — RSI(7) <= 30 for longs / >= 70 for shorts (strict 25/75 in extreme-only regime); (d) level — was the entry AT a SKULD key level, and what score; (e) rejection candle present at the level; (f) risk — stop beyond the stretch extreme, target session VWAP (or the first working level before it), risk 0.25-0.75% per trade; (g) discipline — did he trade outside the edge (trend day, no stretch, no level, chasing)? Reserve sharp flags for: any MR trade with ADX > 30, entry mid-air (no level), target through a working level, no stop, revenge or euphoria language. Otherwise constructive, specific, short."
     }
 
     private static func sessionLine(session: SessionRecord, stats: SessionStats) -> String {
@@ -184,7 +224,7 @@ final class MentorService {
         lines.append("")
         lines.append(philosophyBlock(paceBaseline: stats.maxTrades))
         lines.append("")
-        lines.append("Give a short mentor read (max ~120 words). Direct, no fluff. Never use the word \"fade\" — say \"reversal\" or frame by direction.")
+        lines.append("Give a short mentor read (max ~120 words) graded against the one-edge checklist above: regime, stretch, trigger, level, rejection, risk, discipline. Direct, no fluff. Never use the word \"fade\" — say \"reversal\" or frame by direction.")
 
         return lines.joined(separator: "\n")
     }
@@ -237,7 +277,7 @@ final class MentorService {
         lines.append("")
         lines.append(philosophyBlock(paceBaseline: stats.maxTrades))
         lines.append("")
-        lines.append("Continue the conversation as the mentor: answer his new comment directly (max ~100 words). Direct, specific, no fluff. Never use the word \"fade\" — say \"reversal\" or frame by direction.")
+        lines.append("Continue the conversation as the mentor: answer his new comment directly (max ~100 words), holding the one-edge line above — regime, stretch, trigger, level, rejection, risk, discipline. Direct, specific, no fluff. Never use the word \"fade\" — say \"reversal\" or frame by direction.")
 
         return lines.joined(separator: "\n")
     }

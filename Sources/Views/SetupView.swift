@@ -55,12 +55,11 @@ struct SetupView: View {
     // MARK: - Plan summary strip
 
     private var planSummaryStrip: some View {
-        let tune = store.plan.tune(for: instrument)
-        return ScrollView(.horizontal, showsIndicators: false) {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 planStat("PLAN", "v\(store.plan.version)")
-                planStat("TARGET", "\(tune.targetTicks)t / \(fmt(tune.targetPoints))pt")
-                planStat("STOP", "\(tune.stopTicks)t / \(fmt(tune.stopPoints))pt")
+                planStat("EDGE", "VWAP MR")
+                planStat("RISK", "\(fmt(store.plan.riskPctPerTrade))%")
                 planStat("MAX TRADES", "\(store.plan.maxTradesPerDay)/day")
                 planStat("MIN RANK", "\(store.plan.minRankToTrade)")
                 dailyMaxLossStat

@@ -9,6 +9,7 @@ struct StatsSidebarView: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 12) {
+                EdgeCard(rows: store.stats.playRows)
                 PaceCard(stats: store.stats)
                 PnlCard(stats: store.stats)
                 StarTableCard(rows: store.stats.starRows)
@@ -21,6 +22,49 @@ struct StatsSidebarView: View {
             .padding(12)
         }
         .background(Theme.bg)
+    }
+}
+
+// MARK: - Edge (ONE edge: session VWAP mean reversion)
+
+/// Top card: how much of today was traded INSIDE the edge. MR rows are the
+/// edge; OFF rows are honest off-edge trades — any OFF today gets a red dot
+/// and the question that matters.
+private struct EdgeCard: View {
+    let rows: [SessionStats.PlayRow]
+
+    private var mrRow: SessionStats.PlayRow? { rows.first { $0.play == "MR" } }
+    private var offRow: SessionStats.PlayRow? { rows.first { $0.play == "OFF" } }
+
+    var body: some View {
+        SidebarCard(title: "EDGE") {
+            SidebarRow(
+                label: "MR TRADES",
+                value: "\(mrRow?.taken ?? 0)",
+                valueColor: Theme.text)
+            SidebarRow(
+                label: "MR WIN RATE",
+                value: SidebarFmt.pct(mrRow?.winRate),
+                valueColor: SidebarFmt.rateColor(mrRow?.winRate))
+            let offCount = offRow?.taken ?? 0
+            HStack {
+                Text("OFF-EDGE TRADES")
+                    .font(Theme.monoSmall)
+                    .foregroundStyle(Theme.textDim)
+                Spacer(minLength: 8)
+                if offCount > 0 {
+                    Circle().fill(Theme.red).frame(width: 6, height: 6)
+                }
+                Text("\(offCount)")
+                    .font(Theme.monoSmall.weight(offCount > 0 ? .bold : .regular))
+                    .foregroundStyle(offCount > 0 ? Theme.red : Theme.text)
+            }
+            if offCount > 0 {
+                Text("outside the edge — why?")
+                    .font(Theme.monoSmall)
+                    .foregroundStyle(Theme.red)
+            }
+        }
     }
 }
 
