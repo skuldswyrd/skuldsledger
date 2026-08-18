@@ -1,3 +1,21 @@
+# SKULD 3.1.1 — fix: degenerate-σ guard (2026-08-12)
+
+Caught live on his 6-pane 15m scanner (MES pane): `STR -6758.1σ`. Root
+cause: `sd` (session VWAP variance) computes as `sqrt(max(sP2/sV -
+vwapV², 0))` — early in a session, or through a low-dispersion patch,
+catastrophic cancellation in that subtraction can leave `sd` technically
+positive but numerically degenerate. `sigmaDist = (close-vwapV)/sd` then
+inflates to a bogus reading in the thousands. Not cosmetic: `sigmaDist`
+feeds `stretchOK`, the actual STRETCH trade gate — a fake σ that large
+would blow past both `stretchSigmaMin` and `EXT_SIGMA` on a math
+artifact, not a real stretch, risking a spurious fire.
+
+Fix: `sd` must be ≥1% of the bar's own ATR14 (relative floor, scales
+correctly across symbols/price scales — XAUUSD, MES, USDCAD all differ
+wildly in absolute price) or the σ read drops to `na`. `stretchOK` then
+falls through to its documented safety net, the ATR-range test
+(`stretchRangeMult × ATR14`), which was never affected by this bug.
+
 # SKULD 3.1.0 — SESSION PERSPECTIVE (2026-08-12)
 
 Purely informational addition, his ask: "a way to understand RTH and ETH,
