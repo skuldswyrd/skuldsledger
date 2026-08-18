@@ -347,10 +347,17 @@ final class SessionStore: ObservableObject {
     /// The toolbar's manual "open TV" path never passes true, so a
     /// user-triggered open never switches layouts either — only Ledger's own
     /// launch-time cold start does.
+    /// Polls until the CDP bridge answers, patient enough for a genuinely
+    /// slow cold boot. A 6-chart layout (his real setup) has to spin up
+    /// TradingView's Electron shell AND load six separate symbols/indicator
+    /// instances before CDP is reachable — the old [3,8,15,30]s schedule
+    /// gave up at 56s total, well inside a real cold-boot window, so Ledger
+    /// reported "bridge timed out" while TradingView was still visibly
+    /// loading (hit live 2026-08-18). Every 5s for up to 3 minutes.
     private func scheduleTVStatusRetries(switchToLaneLayoutOnBridge: Bool = false) {
         Task { [weak self] in
-            for delay in [3.0, 8.0, 15.0, 30.0] {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            for _ in 0..<36 {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard let self else { return }
                 await self.refreshTVStatus()
                 if self.tvStatus == .bridge {

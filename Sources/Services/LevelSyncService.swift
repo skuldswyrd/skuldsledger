@@ -173,7 +173,14 @@ final class LevelSyncService {
                 levels = Self.parseLabelsPayload(labelOut) ?? []
             }
             var hudLines: [String] = []
-            if case .success(let tableOut) = await runProcess(cli: cli, args: ["data", "tables", "-f", "Skuld"], timeout: 20) {
+            // No CLI-side study filter — same lesson as fetchLevels(): the
+            // tv CLI's `-f` filter is a case-sensitive indexOf against the
+            // study's description, and the indicator's title is all-caps
+            // "SKULD 3.x", so `-f Skuld` silently matched zero studies
+            // (confirmed live 2026-08-18: study_count 0 filtered vs 1
+            // unfiltered). Pull every study on the pane; parseTablesPayload
+            // picks the SKULD one client-side, case-insensitively.
+            if case .success(let tableOut) = await runProcess(cli: cli, args: ["data", "tables"], timeout: 20) {
                 hudLines = Self.parseTablesPayload(tableOut)
             }
 
@@ -213,11 +220,20 @@ final class LevelSyncService {
     /// as an opaque mirror of whatever the indicator's HUD currently draws.
     private static func parseTablesPayload(_ output: String) -> [String] {
         guard let data = output.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let studies = obj["studies"] as? [[String: Any]] else {
             return []
         }
-        let studies = obj["studies"] as? [[String: Any]]
-        let tables = studies?.first?["tables"] as? [[String: Any]]
+        // Pick the SKULD study by name, case-insensitively — a pane may
+        // also run HITLIST or another indicator, and blindly taking the
+        // first study back would grab the wrong dashboard on those panes.
+        // Falls back to the first study only if nothing named "skuld" is
+        // found, so a version-name drift (e.g. a future "Skuld Reversion")
+        // degrades gracefully instead of returning nothing.
+        let skuldStudy = studies.first {
+            ($0["name"] as? String)?.localizedCaseInsensitiveContains("skuld") == true
+        } ?? studies.first
+        let tables = skuldStudy?["tables"] as? [[String: Any]]
         return (tables?.first?["rows"] as? [String]) ?? []
     }
 

@@ -43,6 +43,18 @@ struct GridHomeView: View {
                 LaneDetailSheet(symbol: symbol)
             }
         }
+        .onAppear {
+            // The 15-min auto-refresh only fires in a narrow window after
+            // each real bar close — without this, a fresh launch (or
+            // switching back from FEED) sits on 6 empty "no dashboard read"
+            // cells until the clock happens to catch up, even though
+            // TradingView is sitting right there ready. Scan once
+            // immediately if nothing's loaded yet; the timer and the manual
+            // button own every refresh after that.
+            if store.scanResults.isEmpty, !store.scanBusy {
+                Task { await store.scanAllPanes() }
+            }
+        }
     }
 
     private var laneDetailBinding: Binding<Bool> {
