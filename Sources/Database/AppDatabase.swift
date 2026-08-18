@@ -156,6 +156,14 @@ final class AppDatabase {
                 """)
         }
 
+        // Multi-pane scan tags each level with the raw TradingView pane
+        // symbol it came from ("XAUUSD", "MNQ1!", ...). Nil keeps its
+        // existing meaning — "the session's own single instrument" — so
+        // every pre-scan row and every single-symbol session is unaffected.
+        migrator.registerMigration("v6") { db in
+            try db.execute(sql: "ALTER TABLE levels ADD COLUMN instrument TEXT;")
+        }
+
         return migrator
     }
 

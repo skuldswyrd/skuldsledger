@@ -320,13 +320,30 @@ struct ComposerView: View {
                 .frame(height: 1)
         }
         .padding(.horizontal, 14)
-        .onAppear { autoAttach(store.pendingScreenshots) }
+        .onAppear {
+            autoAttach(store.pendingScreenshots)
+            consumePendingInstrument()
+        }
         .onChange(of: store.pendingScreenshots) { _, shots in
             if let sel = selectedShot, !shots.contains(sel) {
                 attach(nil)
             }
             autoAttach(shots)
         }
+        .onChange(of: store.pendingComposerInstrument) { _, _ in
+            consumePendingInstrument()
+        }
+    }
+
+    /// Scanner sheet's "Log entry →" hands off a symbol here — preselect it
+    /// like a manual pick (sticks, doesn't get overridden by the next
+    /// screenshot's filename auto-detect), then clear the hand-off so it
+    /// only ever applies once.
+    private func consumePendingInstrument() {
+        guard let pending = store.pendingComposerInstrument else { return }
+        instrument = pending
+        instrumentManuallySet = true
+        store.pendingComposerInstrument = nil
     }
 
     /// Newest inbox screenshot lands attached, ready to caption.
@@ -491,7 +508,7 @@ struct ComposerView: View {
     private var levelMenu: some View {
         Menu {
             Button("no level") { levelId = nil }
-            ForEach(store.levels) { level in
+            ForEach(filteredLevels) { level in
                 Button("\(level.name) \(Theme.starText(level.stars)) @ \(trimmedNumber(level.price))") {
                     levelId = level.id
                 }
@@ -503,6 +520,29 @@ struct ComposerView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+    }
+
+    /// This post's instrument, falling back to the session's own — the same
+    /// resolution `submitEntry` uses to tag the entry, so the level filter
+    /// below matches what actually gets saved.
+    private var effectiveInstrument: Instrument? {
+        instrument ?? Instrument(rawValue: store.session?.instrument ?? "")
+    }
+
+    /// Narrows the level menu to this post's own instrument once a pane scan
+    /// has tagged levels by symbol — a MNQ post won't show XAUUSD levels
+    /// mixed in, and vice versa. Untagged levels (nil instrument — every
+    /// level in a session that never ran a scan) always show, so
+    /// single-symbol sessions are unaffected. A pane symbol that doesn't map
+    /// onto the Instrument enum (XAUUSD, NAS100, USDCAD — no case for them
+    /// yet) can't be discriminated either way, so those levels always show
+    /// too rather than becoming unreachable.
+    private var filteredLevels: [LevelRecord] {
+        store.levels.filter { level in
+            guard let raw = level.instrument, !raw.isEmpty else { return true }
+            guard let detected = Instrument.detect(fromFilename: raw) else { return true }
+            return detected == effectiveInstrument
+        }
     }
 
     /// Cyan when auto-detected off the screenshot filename, dim "inst" when

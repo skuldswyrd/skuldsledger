@@ -17,6 +17,17 @@ struct ChartLevel: Equatable {
     let rank: Int?
 }
 
+/// One pane's read from a multi-chart `scanAllPanes()` sweep: its levels
+/// (same parse as `fetchLevels()`) plus the SKULD dashboard table's raw row
+/// text — an opaque display mirror, never re-parsed into typed fields.
+struct ScanResult: Equatable {
+    let index: Int
+    let symbol: String
+    let resolution: String?
+    let levels: [ChartLevel]
+    let hudLines: [String]
+}
+
 enum LevelSyncError: Error, LocalizedError {
     case cliNotFound
     case timeout
@@ -95,17 +106,83 @@ final class LevelSyncService {
         case .failure(let err): return .failure(err)
         }
 
+        guard let levels = Self.parseLabelsPayload(output) else {
+            return .failure(.failed("unreadable tv output"))
+        }
+        return levels.isEmpty ? .failure(.noLevels) : .success(levels)
+    }
+
+    /// Every pane in the current TradingView multi-chart layout, one at a
+    /// time: `pane list` for the roster, then per pane `pane focus` + a
+    /// settle beat + the same `data labels`/`data tables` reads as the
+    /// single-pane path. Manual, user-triggered only (Scanner sheet) — a
+    /// full 6-pane sweep legitimately takes 20-40s and must never ride the
+    /// 5-minute auto-timer.
+    func scanAllPanes() async -> Result<[ScanResult], LevelSyncError> {
+        guard let cli = Self.locateCLI() else { return .failure(.cliNotFound) }
+
+        let listOutput: String
+        switch await runProcess(cli: cli, args: ["pane", "list"], timeout: 20) {
+        case .success(let out): listOutput = out
+        case .failure(let err): return .failure(err)
+        }
+
+        guard let data = listOutput.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let panesRaw = obj["panes"] as? [[String: Any]] else {
+            return .failure(.failed("no panes found — is a TradingView multi-chart layout open?"))
+        }
+
+        let panes = panesRaw
+            .compactMap { p -> (index: Int, symbol: String, resolution: String?)? in
+                guard let index = p["index"] as? Int, let symbol = p["symbol"] as? String else { return nil }
+                return (index, symbol, p["resolution"] as? String)
+            }
+            .sorted { $0.index < $1.index }
+
+        guard !panes.isEmpty else {
+            return .failure(.failed("no panes found — is a TradingView multi-chart layout open?"))
+        }
+
+        var results: [ScanResult] = []
+        for pane in panes {
+            // Best-effort: a focus hiccup on one pane still lets us try the
+            // reads below (whatever's currently focused) rather than
+            // aborting the whole sweep.
+            _ = await runProcess(cli: cli, args: ["pane", "focus", String(pane.index)], timeout: 20)
+            try? await Task.sleep(nanoseconds: 350_000_000)
+
+            var levels: [ChartLevel] = []
+            if case .success(let labelOut) = await runProcess(cli: cli, args: ["data", "labels", "-n", "120"], timeout: 20) {
+                levels = Self.parseLabelsPayload(labelOut) ?? []
+            }
+            var hudLines: [String] = []
+            if case .success(let tableOut) = await runProcess(cli: cli, args: ["data", "tables", "-f", "Skuld"], timeout: 20) {
+                hudLines = Self.parseTablesPayload(tableOut)
+            }
+
+            results.append(ScanResult(
+                index: pane.index, symbol: pane.symbol, resolution: pane.resolution,
+                levels: levels, hudLines: hudLines))
+        }
+
+        return .success(results)
+    }
+
+    /// Shared `tv data labels` JSON -> deduped ChartLevels. Extracted so
+    /// `scanAllPanes()` reuses the exact same parse/dedup path per pane;
+    /// `fetchLevels()`'s own observable behavior is unchanged by this split.
+    private static func parseLabelsPayload(_ output: String) -> [ChartLevel]? {
         guard let data = output.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let studies = obj["studies"] as? [[String: Any]] else {
-            return .failure(.failed("unreadable tv output"))
+            return nil
         }
-
         var levels: [ChartLevel] = []
         for study in studies {
             for label in (study["labels"] as? [[String: Any]] ?? []) {
                 guard let text = label["text"] as? String else { continue }
-                if let level = Self.parseClusterLabel(text, fallbackPrice: label["price"] as? Double) {
+                if let level = parseClusterLabel(text, fallbackPrice: label["price"] as? Double) {
                     levels.append(level)
                 }
             }
@@ -113,8 +190,19 @@ final class LevelSyncService {
         // Chart may briefly show duplicate labels during redraw — dedupe by name.
         var seen = Set<String>()
         levels = levels.filter { seen.insert($0.name.lowercased()).inserted }
+        return levels
+    }
 
-        return levels.isEmpty ? .failure(.noLevels) : .success(levels)
+    /// `tv data tables -f Skuld` JSON -> the first table's row strings, kept
+    /// as an opaque mirror of whatever the indicator's HUD currently draws.
+    private static func parseTablesPayload(_ output: String) -> [String] {
+        guard let data = output.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return []
+        }
+        let studies = obj["studies"] as? [[String: Any]]
+        let tables = studies?.first?["tables"] as? [[String: Any]]
+        return (tables?.first?["rows"] as? [String]) ?? []
     }
 
     /// Parses every SKULD label era (see ChartLevel doc). Other labels

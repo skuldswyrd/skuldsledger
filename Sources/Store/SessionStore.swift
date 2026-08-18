@@ -104,6 +104,14 @@ final class SessionStore: ObservableObject {
     var tvConnected: Bool { tvStatus == .bridge }
     @Published private(set) var lastLevelSync: Date?
     @Published private(set) var levelSyncBusy: Bool = false
+    /// Latest "Scan All" sweep of every pane in the live multi-chart layout —
+    /// the Scanner sheet's source of truth. Levels from it also merge into
+    /// `levels` (tagged per pane); this array is the raw per-pane snapshot.
+    @Published private(set) var scanResults: [ScanResult] = []
+    @Published private(set) var scanBusy: Bool = false
+    /// Set by the Scanner sheet's "Log entry →" — the composer preselects
+    /// its instrument from this on appear, then clears it back to nil.
+    @Published var pendingComposerInstrument: Instrument?
     /// Commits behind origin/main; nil = up to date or unknown.
     @Published private(set) var updateBehind: Int?
 
@@ -1023,14 +1031,19 @@ final class SessionStore: ObservableObject {
     // MARK: - Chart level sync (tv CLI / CDP)
 
     /// Merges levels read from the chart (bridge or screenshot) into the
-    /// session: same name -> price/stars/rank refresh (broken flag, notes
-    /// preserved); new name -> inserted. Manual levels never deleted.
-    private func mergeChartLevels(_ chartLevels: [ChartLevel], source: String) throws {
+    /// session: same (name, instrument) -> price/stars/rank refresh (broken
+    /// flag, notes preserved); new -> inserted. Manual levels never deleted.
+    /// `instrument` nil (the single-pane path's default) keys purely on name,
+    /// exactly as before this method learned about panes — a pane scan's
+    /// tagged levels (e.g. "sesH" on XAUUSD vs "sesH" on MES) live under
+    /// their own keys and never collide with it.
+    private func mergeChartLevels(_ chartLevels: [ChartLevel], instrument: String? = nil, source: String) throws {
         guard let db, let s = session else { return }
-        var byName: [String: LevelRecord] = [:]
-        for level in levels { byName[level.name.lowercased()] = level }
+        func key(_ name: String, _ inst: String?) -> String { "\(name.lowercased())|\(inst ?? "")" }
+        var byKey: [String: LevelRecord] = [:]
+        for level in levels { byKey[key(level.name, level.instrument)] = level }
         for chart in chartLevels {
-            if var existing = byName[chart.name.lowercased()] {
+            if var existing = byKey[key(chart.name, instrument)] {
                 if existing.price != chart.price || existing.stars != chart.stars
                     || existing.rankScore != (chart.rank ?? existing.rankScore) {
                     existing.price = chart.price
@@ -1047,11 +1060,41 @@ final class SessionStore: ObservableObject {
                     stars: chart.stars,
                     rankScore: chart.rank,
                     broken: false,
-                    notes: source))
+                    notes: source,
+                    instrument: instrument))
             }
         }
         lastLevelSync = Date()
         reloadAll()
+    }
+
+    /// Manual, user-triggered sweep of every pane in the live TradingView
+    /// multi-chart layout (Scanner sheet's "Scan All"). 20-40s for six panes
+    /// is expected — this never rides the 5-minute single-pane auto-timer.
+    /// Each pane's levels merge in tagged with that pane's raw symbol, so
+    /// the same level name on two different instruments stays two rows.
+    func scanAllPanes() async {
+        guard !scanBusy else { return }
+        scanBusy = true
+        let outcome = await levelSync.scanAllPanes()
+        scanBusy = false
+        switch outcome {
+        case .success(let results):
+            scanResults = results
+            var saveFailures = 0
+            for result in results {
+                do {
+                    try mergeChartLevels(result.levels, instrument: result.symbol, source: "pane-scan")
+                } catch {
+                    saveFailures += 1
+                }
+            }
+            if saveFailures > 0 {
+                errorMessage = "Pane scan: \(saveFailures) of \(results.count) panes' levels failed to save."
+            }
+        case .failure(let err):
+            errorMessage = err.localizedDescription
+        }
     }
 
     /// Level acquisition, two rungs: tv CLI off the live chart (fast, needs

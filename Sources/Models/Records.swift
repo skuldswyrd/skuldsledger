@@ -55,6 +55,23 @@ struct LevelRecord: Codable, Identifiable, Equatable, FetchableRecord, Persistab
     var rankScore: Int?              // raw summed rank if clustered
     var broken: Bool
     var notes: String?
+    /// Raw TradingView pane symbol this level came from (multi-pane scan,
+    /// e.g. "XAUUSD", "MNQ1!"). nil = belongs to the session's own single
+    /// instrument — every pre-scan row and single-symbol session unaffected.
+    var instrument: String?
+
+    init(id: String, sessionId: String, name: String, price: Double, stars: Int,
+         rankScore: Int?, broken: Bool, notes: String?, instrument: String? = nil) {
+        self.id = id
+        self.sessionId = sessionId
+        self.name = name
+        self.price = price
+        self.stars = stars
+        self.rankScore = rankScore
+        self.broken = broken
+        self.notes = notes
+        self.instrument = instrument
+    }
 
     /// Effective rank for the min_rank_to_trade check: raw rank if known,
     /// else the floor of the star band (5→10, 4→8, 3→6, 2→4, 1→1).
