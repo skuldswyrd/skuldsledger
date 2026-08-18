@@ -1,11 +1,22 @@
 import SwiftUI
 
-/// Root shell. Three states:
+/// GRID (the six-pane home screen) vs FEED (the original session shell —
+/// composer/feed + stats sidebar, reached through SessionHubView/SetupView
+/// exactly like before). Defaults to GRID on every launch — sessions no
+/// longer gate what the app opens to.
+private enum HomeMode: String, CaseIterable, Identifiable {
+    case grid = "GRID"
+    case session = "FEED"
+    var id: String { rawValue }
+}
+
+/// Root shell. Two states:
 ///  1. fatal DB error  -> blocking panel (nothing else works without the journal)
-///  2. no session yet  -> SetupView (pre-market)
-///  3. live session    -> banners + FeedView | StatsSidebarView, toolbar actions
+///  2. otherwise       -> GRID (default) or FEED, swapped by the toolbar pill;
+///                        FEED still runs its own session/setup/hub branch.
 struct ContentView: View {
     @EnvironmentObject private var store: SessionStore
+    @State private var homeMode: HomeMode = .grid
     @State private var confirmEndSession = false
     @State private var showUpgradeLog = false
     @State private var confirmUpdate = false
@@ -13,7 +24,6 @@ struct ContentView: View {
     @State private var showSettleDay = false
     @State private var showAnalytics = false
     @State private var showBlog = false
-    @State private var showLanes = false
     @State private var showNewSession = false
     @State private var newSessionName = ""
     @State private var newSessionInstrument: Instrument = .NQ
@@ -53,9 +63,6 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showBlog) {
                 BlogView()
-            }
-            .sheet(isPresented: $showLanes) {
-                LanesView()
             }
             .toolbar {
                 // Always visible — pre-session setup included: session
@@ -105,6 +112,17 @@ struct ContentView: View {
                     .help("Sessions — switch, reopen, or start a named workspace")
                 }
                 ToolbarItem(placement: .navigation) {
+                    Picker("", selection: $homeMode) {
+                        ForEach(HomeMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("GRID — the 6-pane home screen. FEED — the composer, feed and stats sidebar.")
+                }
+                ToolbarItem(placement: .navigation) {
                     Text("LEDGER v\(AppVersion.string)")
                         .font(.system(size: 9, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Theme.purple)
@@ -132,14 +150,6 @@ struct ContentView: View {
                         Label("Analytics", systemImage: "chart.bar.xaxis")
                     }
                     .help("Trader profile — lifetime KPIs, Sharpe, streaks, cross filters")
-                }
-                ToolbarItem(placement: .automatic) {
-                    Button {
-                        showLanes = true
-                    } label: {
-                        Label("Lanes", systemImage: "rectangle.split.3x1")
-                    }
-                    .help("Six persistent lanes, one per pane — live HUD read + its own ongoing mentor thread")
                 }
                 ToolbarItem(placement: .automatic) {
                     Button {
@@ -187,7 +197,25 @@ struct ContentView: View {
     private var content: some View {
         if let fatal = store.fatalError {
             FatalErrorPanel(message: fatal)
-        } else if store.session != nil {
+        } else {
+            switch homeMode {
+            case .grid:
+                // The default screen now — six rectangles matching the
+                // user's real TradingView layout, no session gating.
+                GridHomeView(openComposer: { homeMode = .session })
+            case .session:
+                sessionArea
+            }
+        }
+    }
+
+    /// Exactly the old root branch, just relocated behind the FEED pill
+    /// instead of being what the app opens to. SetupView/SessionHubView are
+    /// unchanged — still how you start today's session by hand or spin up a
+    /// deliberately NAMED workspace (e.g. "LEAP tournament").
+    @ViewBuilder
+    private var sessionArea: some View {
+        if store.session != nil {
             sessionShell
         } else if store.composingSession {
             // setup runs full-screen with a way back to the Hub

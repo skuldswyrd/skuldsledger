@@ -173,10 +173,21 @@ final class SessionStore: ObservableObject {
         do {
             let database = try AppDatabase.open()
             db = database
-            // auto-enter only a LIVE session; an ended one means the user
-            // left deliberately — land on the Hub instead
+            // GRID is the default screen and works with no session at all —
+            // Lanes' auto-refresh no longer depends on one (see
+            // checkLaneAutoRefresh). This only decides what FEED shows: an
+            // OPEN session for today loads as-is; NO ROW for today silently
+            // auto-starts one so FEED works without a SetupView gate. A
+            // session the user deliberately ENDED today stays nil here on
+            // purpose — auto-starting a fresh duplicate behind an explicit
+            // End Session would be presumptuous; FEED's Hub still offers
+            // "Reopen this session" for that case.
             let todays = try database.fetchSession(date: todayDate)
-            session = todays?.status == "open" ? todays : nil
+            if let todays, todays.status == "open" {
+                session = todays
+            } else if todays == nil {
+                session = autoStartTodaySession()
+            }
             mentor = MentorService(repoRoot: Workspace.root)
             mentorAvailable = MentorService.locateCLI() != nil
             reloadAll()
@@ -212,14 +223,14 @@ final class SessionStore: ObservableObject {
     }
 
     /// Lanes auto-refresh: rides the existing 60s heartbeat rather than a
-    /// separate Timer. Fires the same full `scanAllPanes()` sweep the "Scan
-    /// All" button does once per real 15-minute ET bar close, gated by a
-    /// 15-90s settle window so it fires after the bar has actually closed
-    /// and TradingView has redrawn — never mid-bar. Only while a session is
-    /// open (matches the Lanes UI's "auto every 15 min when a session is
-    /// open" copy and the existing 5-minute single-pane sync's own gate).
+    /// separate Timer. Fires the same full `scanAllPanes()` sweep the
+    /// "Refresh All" button does once per real 15-minute ET bar close, gated
+    /// by a 15-90s settle window so it fires after the bar has actually
+    /// closed and TradingView has redrawn — never mid-bar. Deliberately NOT
+    /// gated on `session != nil` — GRID is the app's home screen regardless
+    /// of session state (ending today's session, or never starting one,
+    /// must not silently stop the lanes from refreshing).
     private func checkLaneAutoRefresh(now: Date = Date()) {
-        guard session != nil else { return }
         let boundary = Workspace.mostRecentQuarterHourET(now: now)
         let sinceBoundary = now.timeIntervalSince(boundary)
         guard sinceBoundary >= 15, sinceBoundary <= 90 else { return }
@@ -455,6 +466,38 @@ final class SessionStore: ObservableObject {
     }
 
     // MARK: - Session lifecycle
+
+    /// Bootstrap-only silent equivalent of `startSession` — same shape (no
+    /// IB high/low, no level drafts), just an instrument chosen from real
+    /// data instead of a picker: the user's own settings default, else
+    /// whatever instrument their last session actually used, else NQ as the
+    /// same last-resort default SetupView itself falls back to. Never
+    /// invents a plan number — this only picks WHICH instrument the silent
+    /// session opens under; IB/levels stay exactly as empty as a manual
+    /// Start Session with nothing filled in would leave them, and flow in
+    /// the same way once the chart is read.
+    private func autoStartTodaySession() -> SessionRecord? {
+        guard let db else { return nil }
+        let instrument = settings.defaultInstrument.flatMap(Instrument.init(rawValue:))
+            ?? lastUsedInstrument
+            ?? .NQ
+        let s = SessionRecord(
+            id: UUID().uuidString,
+            date: todayDate,
+            instrument: instrument.rawValue,
+            ibHigh: nil,
+            ibLow: nil,
+            tradesTaken: 0,
+            status: "open",
+            createdAt: Workspace.isoNow())
+        do {
+            try db.save(s)
+            return s
+        } catch {
+            errorMessage = "Could not auto-start today's session: \(error.localizedDescription)"
+            return nil
+        }
+    }
 
     func startSession(instrument: Instrument, ibHigh: Double?, ibLow: Double?, levelDrafts: [LevelDraft]) {
         guard let db else { return }
