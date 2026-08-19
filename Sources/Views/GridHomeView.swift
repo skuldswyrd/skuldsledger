@@ -3,9 +3,11 @@ import SwiftUI
 /// GRID — the app's ONLY home screen (FEED / the old session shell is gone):
 /// a grid mirroring the user's real TradingView layout, sized to however many
 /// panes the last scan actually found. `ScanResult.index` (0-based, the same
-/// index `tv pane list` reports) maps DIRECTLY to grid position in standard
-/// reading order — row = index/columns, col = index%columns — because that's
-/// how TradingView's own multi-chart grids number their panes.
+/// index `tv pane list` reports) maps to grid position COLUMN-MAJOR — each
+/// column fills top-to-bottom before moving to the next column (index0=T1,
+/// index1=B1, index2=T2, index3=B2, ...) — confirmed against the user's real
+/// 6-pane layout 2026-08-19; row-major was the original (wrong) assumption
+/// and silently scrambled the 4 middle positions. See `grid` below.
 ///
 /// One "Refresh All" sweep (manual here, or automatic every 15 minutes ET
 /// regardless of session state — see SessionStore.checkLaneAutoRefresh) still
@@ -133,11 +135,20 @@ struct GridHomeView: View {
         } else {
             let cols = columns
             let rowCount = (s.count + cols - 1) / cols
+            // COLUMN-MAJOR fill — verified against the user's real 6-pane
+            // layout 2026-08-19: `tv pane list`'s index order fills each
+            // column top-to-bottom before moving to the next column (index0
+            // =T1, index1=B1, index2=T2, index3=B2, index4=T3, index5=B3),
+            // NOT row-major left-to-right as originally assumed. Row-major
+            // fill silently scrambled the 4 middle positions (endpoints T1/
+            // B3 happened to still line up, which is why it looked plausible
+            // until compared side-by-side against the real chart). idx =
+            // col*rowCount + row is the column-major index for cell (row,c).
             VStack(spacing: 10) {
                 ForEach(0..<rowCount, id: \.self) { r in
                     HStack(spacing: 10) {
                         ForEach(0..<cols, id: \.self) { c in
-                            let idx = r * cols + c
+                            let idx = c * rowCount + r
                             if idx < s.count {
                                 cell(s[idx], index: idx)
                             } else {
