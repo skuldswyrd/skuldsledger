@@ -31,6 +31,11 @@ struct GridHomeView: View {
     /// live in every cell at once now, so this can't be a single `@State`
     /// string the way the old drill-down sheet's composer was.
     @State private var drafts: [String: String] = [:]
+    /// Per-cell tab selection, keyed by symbol. Defaults to .chat (missing
+    /// key) — DATA is the reference/history tab, CHAT is where the action is.
+    @State private var selectedTabs: [String: LaneTab] = [:]
+
+    private enum LaneTab { case data, chat }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -200,6 +205,7 @@ struct GridHomeView: View {
 
             Divider().overlay(Theme.cardBorder)
 
+            tabBar(result?.symbol)
             threadScroll(result?.symbol)
             composeRow(result?.symbol)
 
@@ -242,44 +248,98 @@ struct GridHomeView: View {
 
     // MARK: - Inline thread (was LaneDetailSheet's drill-down popup — now
     // always visible in the cell itself, no separate sheet/button)
+    //
+    // DATA vs CHAT split (2026-08-19, his catch): the "system" entries this
+    // thread auto-logs are HUD snapshots — near-duplicates of the live
+    // hudBlock already sitting at the top of this same cell. Showing them
+    // interleaved with the actual conversation made the thread look like it
+    // was just repeating itself. DATA is the history of those snapshots
+    // (genuinely different from "what's showing right now" — it's a
+    // timestamped log, useful for "how did this develop"); CHAT is the
+    // trader's own messages + mentor replies only, nothing else. Both
+    // auto-scroll to the newest entry — chronological order stays
+    // oldest-top/newest-bottom (normal chat convention), it just no longer
+    // makes him scroll to reach the bottom every time.
 
-    /// Fixed-height scroll of this lane's full thread history — the exact
-    /// row rendering the old "Thread" popup used (dim system/HUD lines,
-    /// purple MENTOR caption, plain trader text), just inline now.
+    private func tabBar(_ symbol: String?) -> some View {
+        let selected = selectedTabs[symbol ?? "", default: .chat]
+        return HStack(spacing: 6) {
+            tabButton("DATA", tab: .data, symbol: symbol, selected: selected)
+            tabButton("CHAT", tab: .chat, symbol: symbol, selected: selected)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func tabButton(_ title: String, tab: LaneTab, symbol: String?, selected: LaneTab) -> some View {
+        let isOn = selected == tab
+        return Button {
+            selectedTabs[symbol ?? ""] = tab
+        } label: {
+            Text(title)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(isOn ? Theme.bg : Theme.textDim)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(isOn ? Theme.purple : Theme.inset))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Fixed-height scroll of whichever tab is active, auto-scrolled to the
+    /// newest entry — the exact row rendering the old "Thread" popup used
+    /// (dim system/HUD lines, purple MENTOR caption, plain trader text).
     @ViewBuilder
     private func threadScroll(_ symbol: String?) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                if let symbol {
-                    let updates = store.laneUpdates[symbol] ?? []
+        let tab = selectedTabs[symbol ?? "", default: .chat]
+        let allUpdates = symbol.flatMap { store.laneUpdates[$0] } ?? []
+        let updates = allUpdates.filter { tab == .data ? $0.kind == "system" : $0.kind != "system" }
+        let emptyText = tab == .data ? "no history yet" : "no messages yet — say something below"
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
                     if updates.isEmpty {
-                        Text("no lane activity yet")
+                        Text(emptyText)
                             .font(Theme.monoSmall)
                             .foregroundStyle(Theme.textDim)
                     } else {
                         ForEach(updates) { update in
-                            laneUpdateRow(update)
+                            laneUpdateRow(update).id(update.id)
                         }
                     }
-                    if store.laneMentorBusy.contains(symbol) {
+                    if tab == .chat, let symbol, store.laneMentorBusy.contains(symbol) {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
                             Text("mentor thinking…")
                                 .font(Theme.monoSmall)
                                 .foregroundStyle(Theme.textDim)
                         }
+                        .id("busy")
                     }
-                } else {
-                    Text("no lane activity yet")
-                        .font(Theme.monoSmall)
-                        .foregroundStyle(Theme.textDim)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 2)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 2)
+            .onAppear { scrollToBottom(proxy, updates: updates, busy: symbol.map(store.laneMentorBusy.contains) ?? false) }
+            .onChange(of: updates.count) { _, _ in
+                scrollToBottom(proxy, updates: updates, busy: symbol.map(store.laneMentorBusy.contains) ?? false)
+            }
+            .onChange(of: store.laneMentorBusy) { _, _ in
+                scrollToBottom(proxy, updates: updates, busy: symbol.map(store.laneMentorBusy.contains) ?? false)
+            }
+            .onChange(of: tab) { _, _ in
+                scrollToBottom(proxy, updates: updates, busy: symbol.map(store.laneMentorBusy.contains) ?? false)
+            }
         }
         .frame(height: 140)
         .background(RoundedRectangle(cornerRadius: 6).fill(Theme.bg))
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, updates: [LaneUpdateRecord], busy: Bool) {
+        let targetId: AnyHashable? = busy ? "busy" : updates.last?.id
+        guard let targetId else { return }
+        // No animation — this fires on every scan/reply, a visible scroll
+        // animation each time would be its own distraction.
+        proxy.scrollTo(targetId, anchor: .bottom)
     }
 
     /// Lifted verbatim from the old LaneDetailSheet's row(_:) before that
