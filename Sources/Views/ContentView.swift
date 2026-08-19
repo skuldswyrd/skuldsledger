@@ -1,22 +1,17 @@
 import SwiftUI
 
-/// GRID (the six-pane home screen) vs FEED (the original session shell —
-/// composer/feed + stats sidebar, reached through SessionHubView/SetupView
-/// exactly like before). Defaults to GRID on every launch — sessions no
-/// longer gate what the app opens to.
-private enum HomeMode: String, CaseIterable, Identifiable {
-    case grid = "GRID"
-    case session = "FEED"
-    var id: String { rawValue }
-}
-
 /// Root shell. Two states:
 ///  1. fatal DB error  -> blocking panel (nothing else works without the journal)
-///  2. otherwise       -> GRID (default) or FEED, swapped by the toolbar pill;
-///                        FEED still runs its own session/setup/hub branch.
+///  2. otherwise       -> GRID, unconditionally. FEED (the old composer+feed
+///                        session shell) is gone as a destination; its real
+///                        capabilities — Log Entry, Generate Report, Settle
+///                        Day, Stats, Rescan Inbox, End Session — now live as
+///                        toolbar entry points below, same pattern as the
+///                        existing Blog/Analytics/Settings buttons.
 struct ContentView: View {
     @EnvironmentObject private var store: SessionStore
-    @State private var homeMode: HomeMode = .grid
+    @State private var showComposer = false
+    @State private var showStats = false
     @State private var confirmEndSession = false
     @State private var showUpgradeLog = false
     @State private var confirmUpdate = false
@@ -49,6 +44,12 @@ struct ContentView: View {
                     newSessionName = ""
                 }
             }
+            .sheet(isPresented: $showComposer) {
+                ComposerSheet()
+            }
+            .sheet(isPresented: $showStats) {
+                StatsSheet()
+            }
             .sheet(isPresented: $showUpgradeLog) {
                 UpgradeLogView()
             }
@@ -65,121 +66,9 @@ struct ContentView: View {
                 BlogView()
             }
             .toolbar {
-                // Always visible — pre-session setup included: session
-                // browser, edition badge and the TradingView tie live here.
-                ToolbarItem(placement: .navigation) {
-                    // pick any session, jump to today, start a named
-                    // workspace ("LEAP tournament"), reopen a closed one
-                    Menu {
-                        Button("Today (\(store.todayDate))") { store.selectToday() }
-                        Divider()
-                        ForEach(store.allSessions.prefix(15)) { s in
-                            Button {
-                                store.selectSession(id: s.id)
-                            } label: {
-                                let net = store.sessionNets[s.id] ?? 0
-                                Text("\(s.displayTitle)\(s.status == "done" ? " ·closed" : "")\(net != 0 ? String(format: " · %@$%.0f", net < 0 ? "-" : "+", abs(net)) : "")")
-                            }
-                        }
-                        Divider()
-                        Button("New named session…") { showNewSession = true }
-                        if store.session?.status == "done" {
-                            Button("Reopen this session") {
-                                if let id = store.session?.id { store.reopenSession(id: id) }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(store.session?.status == "open" ? Theme.green : Theme.textDim)
-                                .frame(width: 8, height: 8)
-                            Text(sessionTitle)
-                                .font(Theme.mono)
-                                .foregroundStyle(Theme.text)
-                            if store.pinnedSessionId != nil {
-                                Image(systemName: "pin.fill")
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(Theme.amber)
-                            }
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 8))
-                                .foregroundStyle(Theme.textDim)
-                        }
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .help("Sessions — switch, reopen, or start a named workspace")
-                }
-                ToolbarItem(placement: .navigation) {
-                    Picker("", selection: $homeMode) {
-                        ForEach(HomeMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                    .help("GRID — the 6-pane home screen. FEED — the composer, feed and stats sidebar.")
-                }
-                ToolbarItem(placement: .navigation) {
-                    Text("LEDGER v\(AppVersion.string)")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Theme.purple)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Theme.purple.opacity(0.12)))
-                        .overlay(Capsule().stroke(Theme.purple.opacity(0.5), lineWidth: 1))
-                        .help("Skuld's Ledger v\(AppVersion.string)")
-                }
-                ToolbarItem(placement: .navigation) {
-                    TVStatusControl()
-                }
-                ToolbarItem(placement: .automatic) {
-                    Button {
-                        showBlog = true
-                    } label: {
-                        Label("Blog", systemImage: "text.book.closed")
-                    }
-                    .help("Skuldswyrd Online Edition — write posts while trading, pull session notes, export markdown")
-                }
-                ToolbarItem(placement: .automatic) {
-                    Button {
-                        showAnalytics = true
-                    } label: {
-                        Label("Analytics", systemImage: "chart.bar.xaxis")
-                    }
-                    .help("Trader profile — lifetime KPIs, Sharpe, streaks, cross filters")
-                }
-                ToolbarItem(placement: .automatic) {
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                    .help("Pace baseline, daily target, max loss, default instrument")
-                }
-                ToolbarItem(placement: .automatic) {
-                    Button {
-                        showUpgradeLog = true
-                    } label: {
-                        Label("Log", systemImage: "square.and.pencil")
-                    }
-                    .help("Upgrade / error log — jot it now, paste to Claude later")
-                }
-                if let behind = store.updateBehind {
-                    ToolbarItem(placement: .automatic) {
-                        Button {
-                            confirmUpdate = true
-                        } label: {
-                            HStack(spacing: 4) {
-                                Circle().fill(Theme.amber).frame(width: 6, height: 6)
-                                Text("Update (\(behind))")
-                            }
-                        }
-                        .help("New Skuld's Ledger version on GitHub — pulls, rebuilds, relaunches. Your data never moves.")
-                    }
-                }
+                navigationToolbar
+                sessionActionsToolbar
+                utilityToolbar
             }
             .confirmationDialog(
                 "Install update?",
@@ -191,6 +80,16 @@ struct ContentView: View {
             } message: {
                 Text("Pulls the latest code from GitHub, rebuilds, and relaunches. Journal data is untouched.")
             }
+            .confirmationDialog(
+                "End today's session?",
+                isPresented: $confirmEndSession,
+                titleVisibility: .visible
+            ) {
+                Button("End Session", role: .destructive) { store.endSession() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Marks the session done. Entries are kept — generate the report any time.")
+            }
     }
 
     @ViewBuilder
@@ -198,119 +97,173 @@ struct ContentView: View {
         if let fatal = store.fatalError {
             FatalErrorPanel(message: fatal)
         } else {
-            switch homeMode {
-            case .grid:
-                // The default screen now — six rectangles matching the
-                // user's real TradingView layout, no session gating.
-                GridHomeView(openComposer: { homeMode = .session })
-            case .session:
-                sessionArea
-            }
+            // GRID, unconditionally — the only home screen now.
+            GridHomeView(openComposer: { showComposer = true })
         }
     }
 
-    /// Exactly the old root branch, just relocated behind the FEED pill
-    /// instead of being what the app opens to. SetupView/SessionHubView are
-    /// unchanged — still how you start today's session by hand or spin up a
-    /// deliberately NAMED workspace (e.g. "LEAP tournament").
-    @ViewBuilder
-    private var sessionArea: some View {
-        if store.session != nil {
-            sessionShell
-        } else if store.composingSession {
-            // setup runs full-screen with a way back to the Hub
-            ZStack(alignment: .topLeading) {
-                SetupView()
+    // MARK: - Toolbar (split into separate @ToolbarContentBuilder vars —
+    // one giant inline `.toolbar { }` closure made the compiler's whole-
+    // expression type-check for `body` time out once this round added the
+    // five relocated session-action buttons; splitting it the same way the
+    // old FEED-only `sessionToolbar` already did keeps each chunk small
+    // enough to infer quickly)
+
+    /// Always visible — session browser, edition badge, TradingView tie.
+    @ToolbarContentBuilder
+    private var navigationToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            // pick any session, jump to today, start a named workspace
+            // ("LEAP tournament"), reopen a closed one
+            Menu {
+                Button("Today (\(store.todayDate))") { store.selectToday() }
+                Divider()
+                ForEach(store.allSessions.prefix(15)) { s in
+                    Button {
+                        store.selectSession(id: s.id)
+                    } label: {
+                        Text(sessionMenuTitle(s, net: store.sessionNets[s.id] ?? 0))
+                    }
+                }
+                Divider()
+                Button("New named session…") { showNewSession = true }
+                if store.session?.status == "done" {
+                    Button("Reopen this session") {
+                        if let id = store.session?.id { store.reopenSession(id: id) }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(store.session?.status == "open" ? Theme.green : Theme.textDim)
+                        .frame(width: 8, height: 8)
+                    Text(sessionTitle)
+                        .font(Theme.mono)
+                        .foregroundStyle(Theme.text)
+                    if store.pinnedSessionId != nil {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 8))
+                            .foregroundStyle(Theme.amber)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8))
+                        .foregroundStyle(Theme.textDim)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Sessions — switch, reopen, or start a named workspace")
+        }
+        ToolbarItem(placement: .navigation) {
+            Text("LEDGER v\(AppVersion.string)")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Theme.purple)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Theme.purple.opacity(0.12)))
+                .overlay(Capsule().stroke(Theme.purple.opacity(0.5), lineWidth: 1))
+                .help("Skuld's Ledger v\(AppVersion.string)")
+        }
+        ToolbarItem(placement: .navigation) {
+            TVStatusControl()
+        }
+    }
+
+    /// Relocated from the old FEED-only `sessionToolbar` — same store
+    /// calls, same confirm-dialog/sheet plumbing, just reachable from
+    /// anywhere now that GRID is the only screen.
+    @ToolbarContentBuilder
+    private var sessionActionsToolbar: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Button {
+                store.rescanInbox()
+            } label: {
+                Label("Rescan", systemImage: "arrow.clockwise")
+            }
+            .help("Re-scan today's inbox for new screenshots (⇧⌘R)")
+        }
+        ToolbarItem(placement: .automatic) {
+            Button {
+                showStats = true
+            } label: {
+                Label("Stats", systemImage: "chart.bar")
+            }
+            .help("Live session stats — discipline, P&L, star-rank hit rate, levels")
+        }
+        ToolbarItem(placement: .automatic) {
+            Button {
+                showSettleDay = true
+            } label: {
+                Label("Settle Day", systemImage: "checkmark.seal")
+            }
+            .help("Paste TradingView's account history — real fills become journal truth")
+        }
+        ToolbarItem(placement: .automatic) {
+            Button {
+                store.generateReport()
+            } label: {
+                Label("Report", systemImage: "doc.text")
+            }
+            .help("Write today's session report to Reports/ (⇧⌘E)")
+        }
+        ToolbarItem(placement: .automatic) {
+            Button {
+                confirmEndSession = true
+            } label: {
+                Label("End Session", systemImage: "stop.circle")
+            }
+            .help("Mark today's session done")
+        }
+    }
+
+    /// App-wide utilities — unchanged from before this round.
+    @ToolbarContentBuilder
+    private var utilityToolbar: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Button {
+                showBlog = true
+            } label: {
+                Label("Blog", systemImage: "text.book.closed")
+            }
+            .help("Skuldswyrd Online Edition — write posts while trading, pull session notes, export markdown")
+        }
+        ToolbarItem(placement: .automatic) {
+            Button {
+                showAnalytics = true
+            } label: {
+                Label("Analytics", systemImage: "chart.bar.xaxis")
+            }
+            .help("Trader profile — lifetime KPIs, Sharpe, streaks, cross filters")
+        }
+        ToolbarItem(placement: .automatic) {
+            Button {
+                showSettings = true
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+            .help("Pace baseline, daily target, max loss, default instrument")
+        }
+        ToolbarItem(placement: .automatic) {
+            Button {
+                showUpgradeLog = true
+            } label: {
+                Label("Log", systemImage: "square.and.pencil")
+            }
+            .help("Upgrade / error log — jot it now, paste to Claude later")
+        }
+        if let behind = store.updateBehind {
+            ToolbarItem(placement: .automatic) {
                 Button {
-                    store.composingSession = false
+                    confirmUpdate = true
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 10, weight: .bold))
-                        Text("Sessions")
-                            .font(Theme.monoSmall)
+                        Circle().fill(Theme.amber).frame(width: 6, height: 6)
+                        Text("Update (\(behind))")
                     }
-                    .foregroundStyle(Theme.textDim)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(Theme.card))
-                    .overlay(Capsule().stroke(Theme.cardBorder))
                 }
-                .buttonStyle(.plain)
-                .padding(12)
+                .help("New Skuld's Ledger version on GitHub — pulls, rebuilds, relaunches. Your data never moves.")
             }
-        } else {
-            SessionHubView(newNamed: { showNewSession = true })
-        }
-    }
-
-
-    // MARK: - Live session layout
-
-    @ViewBuilder
-    private var sessionShell: some View {
-        VStack(spacing: 0) {
-            // Lunch = informational only (he trades all sessions, all day):
-            // a dim one-liner, never amber, never a block.
-            if store.isLunchBlackout {
-                LunchBanner(
-                    text: "lunch \(Self.hhmm(store.plan.lunchStartMin))–\(Self.hhmm(store.plan.lunchEndMin)) ET — thinner liquidity")
-            }
-            // The only red state up here: daily max loss breached (when the
-            // user defined one). Display only — nothing auto-flattens.
-            if let maxLoss = store.plan.dailyMaxLossUsd, store.stats.netUsd <= -maxLoss {
-                SessionBanner(
-                    text: "MAX LOSS HIT — \(Self.usd(-store.stats.netUsd)) down. Plan says flat.",
-                    color: Theme.red)
-            }
-            HStack(spacing: 0) {
-                FeedView()
-                    .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
-                Divider()
-                    .overlay(Theme.cardBorder)
-                StatsSidebarView()
-                    .frame(width: 300)
-                    .frame(maxHeight: .infinity)
-            }
-        }
-        .toolbar { sessionToolbar }
-        .confirmationDialog(
-            "End today's session?",
-            isPresented: $confirmEndSession,
-            titleVisibility: .visible
-        ) {
-            Button("End Session", role: .destructive) { store.endSession() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Marks the session done. Entries are kept — generate the report any time.")
-        }
-    }
-
-    @ToolbarContentBuilder
-    private var sessionToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .primaryAction) {
-            Button {
-                store.syncLevelsFromChart(manual: true)
-            } label: {
-                if store.levelSyncBusy {
-                    HStack(spacing: 4) {
-                        ProgressView().controlSize(.small)
-                        Text("Syncing…")
-                    }
-                } else {
-                    Text("Sync Levels")
-                }
-            }
-            .disabled(store.levelSyncBusy)
-            .help(syncHelp)
-            Button("Rescan Inbox") { store.rescanInbox() }
-                .help("Re-scan today's inbox for new screenshots (⇧⌘R)")
-            Button("Settle Day") { showSettleDay = true }
-                .help("Paste TradingView's account history — real fills become journal truth")
-            Button("Generate Report") { store.generateReport() }
-                .help("Write today's session report to Reports/ (⇧⌘E)")
-            Button("End Session") { confirmEndSession = true }
-                .help("Mark today's session done")
         }
     }
 
@@ -322,22 +275,95 @@ struct ContentView: View {
         return "\(s.instrument)  \(s.date)"
     }
 
-    private var syncHelp: String {
-        if let last = store.lastLevelSync {
-            let fmt = DateFormatter()
-            fmt.dateFormat = "HH:mm"
-            fmt.timeZone = Workspace.eastern
-            return "Pull ★ clusters off the live chart (auto every 5 min · last \(fmt.string(from: last)) ET)"
+    /// Plain-function string build (not inline in the ViewBuilder) — the
+    /// nested ternaries inline inside the Menu's label closure pushed whole-
+    /// expression type inference for `body` over the timeout once the
+    /// toolbar grew the extra relocated buttons in this round.
+    private func sessionMenuTitle(_ s: SessionRecord, net: Double) -> String {
+        let closedSuffix = s.status == "done" ? " ·closed" : ""
+        let netSuffix: String
+        if net != 0 {
+            netSuffix = String(format: " · %@$%.0f", net < 0 ? "-" : "+", abs(net))
+        } else {
+            netSuffix = ""
         }
-        return "Pull ★ clusters off the live chart (auto every 5 min)"
+        return "\(s.displayTitle)\(closedSuffix)\(netSuffix)"
+    }
+}
+
+// MARK: - Log Entry sheet (wraps the unmodified FeedView as a modal)
+
+/// "Log entry ->" on a grid cell is the only way into the composer now that
+/// FEED isn't a permanent destination. FeedView.swift itself — composer +
+/// entry history — is untouched; this is just a title bar + Close button
+/// around it, same idea as AnalyticsView/BlogView presenting themselves as
+/// self-contained sheets.
+private struct ComposerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider().overlay(Theme.cardBorder)
+            FeedView()
+        }
+        .frame(width: 720, height: 760)
+        .background(Theme.bg)
+        .foregroundColor(Theme.text)
     }
 
-    private static func hhmm(_ minutes: Int) -> String {
-        String(format: "%02d:%02d", minutes / 60, minutes % 60)
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "square.and.pencil")
+                .font(.system(size: 12))
+                .foregroundColor(Theme.green)
+            Text("LOG ENTRY")
+                .font(Theme.mono)
+                .kerning(1.5)
+            Spacer()
+            Button("Close") { dismiss() }
+                .buttonStyle(PillButton(color: Theme.textDim))
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+}
+
+// MARK: - Stats sheet (wraps the unmodified StatsSidebarView as a modal)
+
+/// StatsSidebarView used to sit permanently next to FeedView; now it's its
+/// own toolbar-triggered popover in a fixed-width container, same idea as
+/// AnalyticsView/BlogView. StatsSidebarView.swift itself is untouched.
+private struct StatsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider().overlay(Theme.cardBorder)
+            StatsSidebarView()
+        }
+        .frame(width: 380, height: 680)
+        .background(Theme.bg)
+        .foregroundColor(Theme.text)
     }
 
-    private static func usd(_ value: Double) -> String {
-        String(format: "$%.0f", max(0, value))
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "chart.bar")
+                .font(.system(size: 12))
+                .foregroundColor(Theme.purple)
+            Text("STATS")
+                .font(Theme.mono)
+                .kerning(1.5)
+            Spacer()
+            Button("Close") { dismiss() }
+                .buttonStyle(PillButton(color: Theme.textDim))
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 }
 
