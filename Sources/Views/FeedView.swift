@@ -249,6 +249,11 @@ struct ComposerView: View {
     /// a manual pick from the menu sticks until cleared.
     @State private var instrument: Instrument?
     @State private var instrumentManuallySet = false
+    /// Opaque HUD text mirror handed off by the Grid's "Log entry ->" —
+    /// consumed once from `store.pendingComposerContext`, carried through
+    /// submit onto the saved entry, never re-parsed. nil on entries opened
+    /// straight from the composer (no Grid hand-off).
+    @State private var signalContext: String?
     @State private var showMore = false
     @State private var chopHighText = ""
     @State private var chopLowText = ""
@@ -275,6 +280,7 @@ struct ComposerView: View {
 
             attachedPreview
             spareShotStrip
+            capturedContextBlock
 
             if action == .chop { chopRow }
             if showMore { moreFields }
@@ -323,6 +329,7 @@ struct ComposerView: View {
         .onAppear {
             autoAttach(store.pendingScreenshots)
             consumePendingInstrument()
+            consumePendingContext()
         }
         .onChange(of: store.pendingScreenshots) { _, shots in
             if let sel = selectedShot, !shots.contains(sel) {
@@ -332,6 +339,9 @@ struct ComposerView: View {
         }
         .onChange(of: store.pendingComposerInstrument) { _, _ in
             consumePendingInstrument()
+        }
+        .onChange(of: store.pendingComposerContext) { _, _ in
+            consumePendingContext()
         }
     }
 
@@ -344,6 +354,37 @@ struct ComposerView: View {
         instrument = pending
         instrumentManuallySet = true
         store.pendingComposerInstrument = nil
+    }
+
+    /// Same hand-off pattern as `consumePendingInstrument`, for the HUD text
+    /// mirror the Grid captured at the moment "Log entry ->" was tapped.
+    private func consumePendingContext() {
+        guard let pending = store.pendingComposerContext else { return }
+        signalContext = pending
+        store.pendingComposerContext = nil
+    }
+
+    /// Opaque preview of the captured HUD mirror — read-only, dim, never
+    /// re-parsed. Only shows when a Grid hand-off actually captured
+    /// something for this entry.
+    @ViewBuilder
+    private var capturedContextBlock: some View {
+        if let signalContext, !signalContext.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("SIGNAL CONTEXT CAPTURED")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Theme.textDim)
+                    .kerning(1.0)
+                Text(signalContext)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(Theme.textDim)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Theme.inset))
+        }
     }
 
     /// Newest inbox screenshot lands attached, ready to caption.
@@ -618,6 +659,7 @@ struct ComposerView: View {
         draft.action = action
         draft.playType = playType
         draft.levelId = levelId
+        draft.signalContext = signalContext
         if action == .chop {
             draft.chopHigh = parseDouble(chopHighText)
             draft.chopLow = parseDouble(chopLowText)
@@ -631,6 +673,7 @@ struct ComposerView: View {
         selectedShot = nil
         instrument = nil
         instrumentManuallySet = false
+        signalContext = nil
         comment = ""
         lookingFor = ""
         wantToSee = ""

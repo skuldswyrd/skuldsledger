@@ -186,6 +186,15 @@ final class AppDatabase {
                 """)
         }
 
+        // Signal context: the opaque HUD text mirror (ADX/stretch/RSI/gates)
+        // captured off the live scan at the moment an entry was logged from
+        // the Grid's "Log entry ->" — nullable, nil on every pre-v8 row and
+        // on entries logged without a Grid hand-off. Never re-parsed into
+        // typed fields, same treatment as ScanResult.hudLines everywhere.
+        migrator.registerMigration("v8") { db in
+            try db.execute(sql: "ALTER TABLE entries ADD COLUMN signal_context TEXT;")
+        }
+
         return migrator
     }
 
@@ -349,6 +358,12 @@ final class AppDatabase {
 
     /// Every trade in the journal joined to its post time and session date —
     /// the analytics engine's raw feed (lifetime, all sessions).
+    /// LEFT JOIN levels on the TRADE's own level_id (not the entry's) —
+    /// mirrors the min-rank-to-trade check elsewhere: a trade's level is
+    /// whichever level it was actually logged against. Trades with no
+    /// level_id (off-edge / level-less entries) come back with a nil
+    /// level_stars, bucketed as "no level" in the analytics engine rather
+    /// than dropped.
     func allTradesForAnalytics() throws -> [AnalyticsTradeRow] {
         try dbQueue.read { db in
             try AnalyticsTradeRow.fetchAll(
@@ -357,11 +372,14 @@ final class AppDatabase {
                     SELECT
                       trades.*,
                       entries.ts   AS post_ts,
+                      entries.signal_context AS signal_context,
                       sessions.date AS session_date,
-                      sessions.instrument AS session_instrument
+                      sessions.instrument AS session_instrument,
+                      levels.stars AS level_stars
                     FROM trades
                     JOIN entries  ON entries.id = trades.entry_id
                     JOIN sessions ON sessions.id = entries.session_id
+                    LEFT JOIN levels ON levels.id = trades.level_id
                     ORDER BY COALESCE(trades.entry_time, entries.ts) ASC
                     """)
         }

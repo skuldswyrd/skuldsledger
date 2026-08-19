@@ -61,6 +61,17 @@ struct BreakdownRow: Identifiable {
     var winRate: Double? { (wins + losses) > 0 ? Double(wins) / Double(wins + losses) : nil }
 }
 
+/// One "recent signal contexts" row — a closed trade's raw HUD text mirror
+/// alongside how it turned out, so the trader can eyeball wins vs losses
+/// even though ADX/stretch/RSI aren't numerically bucketed (opaque text,
+/// never re-parsed).
+struct SignalContextEntry: Identifiable {
+    let id: String            // trade id
+    let ts: String            // ISO8601, best available clock
+    let result: String?       // win/loss/scratch
+    let text: String
+}
+
 /// The trader-profile KPI sheet: everything computable from the journal's
 /// closed trades — money, quality ratios, risk-adjusted returns, streaks,
 /// time structure. Long-term record for optimization AND bragging rights.
@@ -111,6 +122,12 @@ struct AnalyticsReport {
     var byInstrument: [BreakdownRow] = []
     var byPlay: [BreakdownRow] = []
     var bySide: [BreakdownRow] = []
+    /// Win rate / count / net USD bucketed by the linked level's star rating
+    /// at trade time, 5 down to 1, "NO LEVEL" last. Only bands that actually
+    /// have trades appear, same convention as every other breakdown here.
+    var byLevelStars: [BreakdownRow] = []
+    /// Newest-first, capped at `AnalyticsEngine.recentSignalContextLimit`.
+    var recentSignalContexts: [SignalContextEntry] = []
 }
 
 enum AnalyticsEngine {
@@ -128,6 +145,9 @@ enum AnalyticsEngine {
     }()
 
     static let weekdayLabels = [2: "MON", 3: "TUE", 4: "WED", 5: "THU", 6: "FRI", 7: "SAT", 1: "SUN"]
+    /// "Recent signal contexts" list cap — enough to eyeball a pattern
+    /// without turning the section into a second feed.
+    static let recentSignalContextLimit = 20
 
     // MARK: - Compute
 
@@ -158,6 +178,8 @@ enum AnalyticsEngine {
         var byInstrument: [String: BreakdownRow] = [:]
         var byPlay: [String: BreakdownRow] = [:]
         var bySide: [String: BreakdownRow] = [:]
+        var byLevelStars: [String: BreakdownRow] = [:]
+        var signalContexts: [SignalContextEntry] = []
 
         for trade in closed {
             let usd = trade.usdResult ?? 0
@@ -216,6 +238,22 @@ enum AnalyticsEngine {
             if let side = trade.side {
                 accumulate(&bySide, key: side, label: side.uppercased(), trade: trade, usd: usd)
             }
+            // Star-rating bucket — key/label built from the same ★-glyph
+            // convention as Theme.starText, inlined here so the engine stays
+            // free of a SwiftUI/Theme dependency. "NO LEVEL" catches trades
+            // with no level_id at all rather than dropping them.
+            if let stars = trade.levelStars {
+                let clamped = max(1, min(5, stars))
+                accumulate(&byLevelStars, key: "s\(clamped)",
+                           label: String(repeating: "★", count: clamped), trade: trade, usd: usd)
+            } else {
+                accumulate(&byLevelStars, key: "none", label: "NO LEVEL", trade: trade, usd: usd)
+            }
+
+            if let ctx = trade.signalContext, !ctx.isEmpty {
+                signalContexts.append(
+                    SignalContextEntry(id: trade.id, ts: trade.clockISO, result: trade.result, text: ctx))
+            }
         }
 
         report.currentStreak = winStreak > 0 ? winStreak : -lossStreak
@@ -264,6 +302,9 @@ enum AnalyticsEngine {
         report.byInstrument = byInstrument.values.sorted { $0.trades > $1.trades }
         report.byPlay = byPlay.values.sorted { $0.trades > $1.trades }
         report.bySide = bySide.values.sorted { $0.label < $1.label }
+        report.byLevelStars = (1...5).reversed().map { "s\($0)" }.compactMap { byLevelStars[$0] }
+            + (byLevelStars["none"].map { [$0] } ?? [])
+        report.recentSignalContexts = Array(signalContexts.suffix(recentSignalContextLimit).reversed())
         return report
     }
 

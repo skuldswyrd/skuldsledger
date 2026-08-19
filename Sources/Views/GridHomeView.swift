@@ -393,6 +393,12 @@ struct GridHomeView: View {
         // case yet, so this resolves nil — the composer just lands on
         // "session default" for those instead of preselecting.
         store.pendingComposerInstrument = Instrument.detect(fromFilename: result.symbol)
+        // Empty hudLines means no HUD read yet on this pane — leave the
+        // hand-off nil rather than capturing an empty string, so the
+        // composer's "SIGNAL CONTEXT CAPTURED" indicator only lights up
+        // when there's actually something captured.
+        store.pendingComposerContext = result.hudLines.isEmpty
+            ? nil : result.hudLines.joined(separator: "\n")
         openComposer()
     }
 }

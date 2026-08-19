@@ -107,6 +107,12 @@ struct EntryRecord: Codable, Identifiable, Equatable, FetchableRecord, Persistab
     /// Per-post instrument (he switches NQ/ES mid-day) — auto-detected from
     /// the TradingView screenshot filename, falls back to the session's.
     var instrument: String?
+    /// Opaque HUD text mirror (ADX/stretch/RSI/gates) captured off the live
+    /// SKULD scan at the moment this entry was logged from the Grid's "Log
+    /// entry ->" — never re-parsed into typed fields, same treatment as
+    /// ScanResult.hudLines everywhere else. nil on entries logged manually
+    /// (composer opened directly, no Grid hand-off) or before schema v8.
+    var signalContext: String?
 }
 
 struct TradeRecord: Codable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
@@ -197,6 +203,14 @@ struct AnalyticsTradeRow: Codable, FetchableRecord {
     var postTs: String
     var sessionDate: String
     var sessionInstrument: String
+    /// The trade's own linked level's star rating (1-5), via LEFT JOIN on
+    /// trades.level_id — nil when the trade has no level_id at all (off-edge
+    /// / level-less entries), bucketed as "no level" in the analytics
+    /// engine rather than dropped.
+    var levelStars: Int?
+    /// Opaque HUD text mirror captured at log time (entries.signal_context)
+    /// — never re-parsed into typed fields, display-only.
+    var signalContext: String?
 
     var resolvedInstrument: String { instrument ?? sessionInstrument }
     /// Best clock for time-of-day/weekday bucketing: broker entry time when

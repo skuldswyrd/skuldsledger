@@ -18,6 +18,11 @@ struct EntryDraft {
     var chopHigh: Double?
     var chopLow: Double?
     var chopCrossings: Int?
+    /// Opaque HUD text mirror captured off the ScanResult at the moment
+    /// "Log entry ->" was tapped in the Grid — never re-parsed into typed
+    /// fields. nil = not captured this way (manual composer open, or the
+    /// pane had no HUD read yet).
+    var signalContext: String?
 }
 
 struct TradeForm {
@@ -119,6 +124,11 @@ final class SessionStore: ObservableObject {
     /// Set by the Scanner sheet's "Log entry →" — the composer preselects
     /// its instrument from this on appear, then clears it back to nil.
     @Published var pendingComposerInstrument: Instrument?
+    /// Same hand-off, carrying the raw HUD text mirror (ADX/stretch/RSI/
+    /// gates) that was on screen at the moment "Log entry ->" was tapped —
+    /// the composer consumes it into the draft on appear, then clears it
+    /// back to nil. Opaque text, never re-parsed into typed fields.
+    @Published var pendingComposerContext: String?
     /// Commits behind origin/main; nil = up to date or unknown.
     @Published private(set) var updateBehind: Int?
 
@@ -590,7 +600,8 @@ final class SessionStore: ObservableObject {
             levelId: draft.levelId,
             mentorReply: nil,
             mentorClaudeSessionId: nil,
-            instrument: (draft.instrument ?? Instrument(rawValue: s.instrument))?.rawValue)
+            instrument: (draft.instrument ?? Instrument(rawValue: s.instrument))?.rawValue,
+            signalContext: draft.signalContext.flatMap(nilIfEmpty))
 
         do {
             try db.save(entry)
@@ -1035,7 +1046,8 @@ final class SessionStore: ObservableObject {
                 levelId: nil,
                 mentorReply: nil,
                 mentorClaudeSessionId: nil,
-                instrument: instrumentStr)
+                instrument: instrumentStr,
+                signalContext: nil)
             let trade = TradeRecord(
                 id: UUID().uuidString,
                 entryId: entryId,

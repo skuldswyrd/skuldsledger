@@ -25,6 +25,7 @@ struct AnalyticsView: View {
                     } else {
                         kpiGrid
                         breakdownGrid
+                        signalContextSection
                         footnote
                     }
                 }
@@ -267,7 +268,59 @@ struct AnalyticsView: View {
             breakdown("BY INSTRUMENT", rows: report.byInstrument)
             breakdown("BY PLAY", rows: report.byPlay)
             breakdown("BY SIDE", rows: report.bySide)
+            breakdown("BY LEVEL STARS", rows: report.byLevelStars)
         }
+    }
+
+    // MARK: - Recent signal contexts
+
+    /// Last N closed trades' raw HUD text mirror alongside how they turned
+    /// out — display-only, opaque, never re-parsed. Not numerically
+    /// bucketed (ADX/RSI/stretch aren't stored fields yet), so this is an
+    /// eyeball tool, not a stat.
+    private var signalContextSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("RECENT SIGNAL CONTEXTS")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(Theme.textDim)
+                .kerning(1)
+            if report.recentSignalContexts.isEmpty {
+                Text("No captured HUD context yet — log entries from the Grid's \"Log entry →\" to start collecting these.")
+                    .font(Theme.monoSmall)
+                    .foregroundColor(Theme.textDim)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(report.recentSignalContexts) { row in
+                        signalContextRow(row)
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.card))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.cardBorder, lineWidth: 1))
+    }
+
+    private func signalContextRow(_ row: SignalContextEntry) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(Fmt.resultLabel(row.result))
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundColor(Fmt.resultColor(row.result))
+                Text(Fmt.etTime(fromISO: row.ts))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(Theme.textDim)
+            }
+            Text(row.text)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(Theme.textDim)
+                .lineLimit(6)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Theme.inset))
     }
 
     private func breakdown(_ title: String, rows: [BreakdownRow]) -> some View {
@@ -343,6 +396,28 @@ struct AnalyticsView: View {
         static func rate(_ r: Double?) -> Color {
             guard let r else { return Theme.textDim }
             return r >= 0.5 ? Theme.green : Theme.red
+        }
+        static func resultLabel(_ r: String?) -> String {
+            (r ?? "?").uppercased()
+        }
+        static func resultColor(_ r: String?) -> Color {
+            switch r {
+            case "win": return Theme.green
+            case "loss": return Theme.red
+            case "scratch": return Theme.textDim
+            default: return Theme.textDim
+            }
+        }
+        /// ISO8601 -> "MM/dd HH:mm" in ET. Falls back to the raw string.
+        static func etTime(fromISO iso: String) -> String {
+            let parser = ISO8601DateFormatter()
+            parser.formatOptions = [.withInternetDateTime]
+            guard let date = parser.date(from: iso) else { return iso }
+            let f = DateFormatter()
+            f.dateFormat = "MM/dd HH:mm"
+            f.timeZone = Workspace.eastern
+            f.locale = Locale(identifier: "en_US_POSIX")
+            return f.string(from: date)
         }
     }
 }
